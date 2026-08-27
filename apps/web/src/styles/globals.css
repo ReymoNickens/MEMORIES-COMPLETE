@@ -1,0 +1,80 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Backgrounds */
+  --ev-bg: #0A0B0C;
+  --ev-bg-elevated: #121416;
+  --ev-bg-page: #F8F9FA;
+  --ev-bg-card: #FFFFFF;
+
+  /* Text */
+  --ev-text-primary: #ECECE8;
+  --ev-text-secondary: #9A9E9F;
+  --ev-text-dark: #111111;
+  --ev-text-muted: #6B7380;
+
+  /* Brand */
+  --ev-brand-navy: #0B1F4B;
+  --ev-brand-crimson: #B8122A;
+  --ev-accent: #C8CCD4;
+
+  /* Semantic */
+  --ev-success: #1A5C2E;
+  --ev-success-bg: #EBF5EE;
+  --ev-warning: #B86800;
+  --ev-warning-bg: #FEF9EE;
+  --ev-error: #B8122A;
+  --ev-error-bg: #FEF0EF;
+  --ev-info-bg: #EEF3FB;
+
+  /* Borders */
+  --ev-border: #D8DCE2;
+  --ev-border-dark: #2A2D32;
+
+  /* MoMo brand */
+  --ev-momo: #FFCB05;
+
+  /* Spacing */
+  --ev-space-1: 4px;
+  --ev-space-2: 8px;
+  --ev-space-3: 12px;
+  --ev-space-4: 16px;
+  --ev-space-5: 24px;
+  --ev-space-6: 32px;
+  --ev-space-7: 48px;
+  --ev-space-8: 64px;
+
+  /* Radius */
+  --ev-radius-sm: 4px;
+  --ev-radius-md: 8px;
+  --ev-radius-lg: 12px;
+  --ev-radius-xl: 16px;
+  --ev-radius-2xl: 24px;
+  --ev-radius-full: 9999px;
+
+  /* Motion */
+  --ev-duration-fast: 150ms;
+  --ev-duration-base: 200ms;
+  --ev-ease: ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --ev-duration-fast: 0ms;
+    --ev-duration-base: 0ms;
+  }
+}
+
+/* Memories Night Club tenant */
+[data-tenant="memories-nc"] {
+  --ev-brand-primary: #B8122A;
+  --ev-brand-surface: #08070D;
+  --ev-brand-surface-2: #100F18;
+}
+
+/* Typography */
+.font-display { font-family: Georgia, 'Times New Roman', serif; }
+.font-body    { font-family: Calibri, Arial, sans-serif; }
+.font-mono    { font-family: 'Courier New', Courier, monospace; }

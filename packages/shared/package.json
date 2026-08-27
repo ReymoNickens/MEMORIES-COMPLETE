@@ -1,0 +1,25 @@
+{
+  "name": "@evolveit/shared",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./totp": "./src/totp.ts",
+    "./money": "./src/money.ts",
+    "./phone": "./src/phone.ts",
+    "./notify": "./src/notify.ts",
+    "./errors": "./src/errors.ts",
+    "./types": "./src/types.ts"
+  },
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "otpauth": "^9.3.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "@types/node": "^20.12.0"
+  }
+}
