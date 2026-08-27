@@ -1,78 +1,81 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServiceRole } from '@/lib/supabase/server'
 import { parseQrPayload, verifyTotp } from '@evolveit/shared/totp'
-import type { RedeemRequest, RedeemResult } from '@evolveit/shared/types'
+import { decodeTotpSecret, hashDeviceKey } from '@evolveit/shared/crypto'
+import { getStaffSession } from '@/lib/staff-session'
+import type { RedeemResult } from '@evolveit/shared/types'
 
 export async function POST(req: NextRequest) {
-  // Auth: device API key in Authorization header
+  const supabase = createSupabaseServiceRole()
   const authHeader = req.headers.get('authorization') ?? ''
   const deviceKey = authHeader.replace('Bearer ', '').trim()
+  const staff = await getStaffSession()
 
-  if (!deviceKey) {
+  let deviceId: string | null = null
+  let deviceName = 'Door'
+  let doorLabel = 'Door 1'
+
+  if (deviceKey) {
+    const { data: device } = await supabase
+      .from('devices')
+      .select('id, name, revoked_at')
+      .eq('key_hash', hashDeviceKey(deviceKey))
+      .maybeSingle()
+    if (!device || device.revoked_at) {
+      return NextResponse.json({ ok: false, reason: 'unauthorized' } satisfies RedeemResult, { status: 401 })
+    }
+    deviceId = device.id
+    deviceName = device.name as string
+  } else if (staff && (staff.roles.includes('door') || staff.roles.includes('owner') || staff.roles.includes('manager'))) {
+    deviceName = staff.full_name
+    doorLabel = staff.station_label ?? 'Door 1'
+  } else {
     return NextResponse.json({ ok: false, reason: 'unauthorized' } satisfies RedeemResult, { status: 401 })
   }
 
-  const supabase = createSupabaseServiceRole()
+  const body = await req.json().catch(() => null) as {
+    ticket_id?: string
+    totp_code?: string
+    qr?: string
+    door_label?: string
+  } | null
 
-  // Verify device key hash
-  const { data: device } = await supabase
-    .from('devices')
-    .select('id, name, role, revoked_at, event_ids')
-    .filter('key_hash', 'eq', hashDeviceKey(deviceKey))
-    .single()
+  let ticketId = body?.ticket_id
+  let totpCode = body?.totp_code
 
-  if (!device || device.revoked_at) {
-    return NextResponse.json({ ok: false, reason: 'unauthorized' } satisfies RedeemResult, { status: 401 })
+  if (body?.qr) {
+    const parsed = parseQrPayload(body.qr)
+    if (!parsed) return NextResponse.json({ ok: false, reason: 'invalid_code' } satisfies RedeemResult)
+    ticketId = parsed.ticketId
+    totpCode = parsed.totpCode
   }
 
-  let body: RedeemRequest
-  try {
-    body = await req.json() as RedeemRequest
-  } catch {
+  if (!ticketId || !totpCode) {
     return NextResponse.json({ ok: false, reason: 'not_found' } satisfies RedeemResult, { status: 400 })
   }
 
-  const { ticket_id, totp_code, door_label } = body
+  if (body?.door_label) doorLabel = body.door_label
 
-  // Fetch ticket TOTP secret (never log it)
   const { data: ticket } = await supabase
     .from('tickets')
     .select('id, totp_secret_enc, status')
-    .eq('id', ticket_id)
+    .eq('id', ticketId)
     .single()
 
-  if (!ticket) {
-    return NextResponse.json<RedeemResult>({ ok: false, reason: 'not_found' })
+  if (!ticket) return NextResponse.json({ ok: false, reason: 'not_found' } satisfies RedeemResult)
+
+  const secret = decodeTotpSecret(ticket.totp_secret_enc as string)
+  if (!verifyTotp(secret, totpCode, 1)) {
+    return NextResponse.json({ ok: false, reason: 'invalid_code' } satisfies RedeemResult)
   }
 
-  // Verify TOTP before calling redeem
-  const decryptedSecret = decryptSecret(ticket.totp_secret_enc as string)
-  const totpValid = verifyTotp(decryptedSecret, totp_code, 1)
-
-  if (!totpValid) {
-    return NextResponse.json<RedeemResult>({ ok: false, reason: 'invalid_code' })
-  }
-
-  // Call the atomic redeem Postgres function
   const { data: result } = await supabase.rpc('redeem_ticket', {
-    p_ticket_id: ticket_id,
-    p_device_id: device.id,
-    p_device_name: device.name as string,
-    p_door_label: door_label,
+    p_ticket_id: ticketId,
+    p_device_id: deviceId,
+    p_device_name: deviceName,
+    p_door_label: doorLabel,
     p_mode: 'online',
   })
 
   return NextResponse.json(result as RedeemResult)
-}
-
-function hashDeviceKey(key: string): string {
-  // In production: use argon2id
-  // Placeholder: SHA-256 for type safety
-  const { createHash } = require('crypto') as typeof import('crypto')
-  return createHash('sha256').update(key).digest('hex')
-}
-
-function decryptSecret(enc: string): string {
-  // In production: decrypt with AES-GCM tenant key
-  return Buffer.from(enc, 'base64').toString('utf8')
 }

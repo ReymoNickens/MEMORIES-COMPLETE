@@ -1,0 +1,26 @@
+import { NextResponse } from 'next/server'
+import { createSupabaseServiceRole } from '@/lib/supabase/server'
+import { getStaffSession } from '@/lib/staff-session'
+
+export async function POST() {
+  const staff = await getStaffSession()
+  if (!staff || !(staff.roles.includes('owner') || staff.roles.includes('manager'))) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
+  }
+  const supabase = createSupabaseServiceRole()
+  const { data: open } = await supabase
+    .from('shifts')
+    .select('id')
+    .eq('tenant_id', staff.tenant_id)
+    .is('closed_at', null)
+    .maybeSingle()
+  if (open) return NextResponse.json({ shift_id: open.id, already_open: true })
+
+  const { data, error } = await supabase.from('shifts').insert({
+    tenant_id: staff.tenant_id,
+    opened_by: staff.user_id,
+  }).select('id').single()
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json({ shift_id: data.id })
+}

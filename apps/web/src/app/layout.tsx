@@ -1,10 +1,13 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import '../styles/globals.css'
 
 export const metadata: Metadata = {
   title: 'Memories Night Club',
   description: 'EvolveIT Digital Operations Platform',
   manifest: '/manifest.json',
+}
+
+export const viewport: Viewport = {
   themeColor: '#B8122A',
 }
 

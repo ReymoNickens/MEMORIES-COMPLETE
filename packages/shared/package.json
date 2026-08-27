@@ -9,7 +9,8 @@
     "./phone": "./src/phone.ts",
     "./notify": "./src/notify.ts",
     "./errors": "./src/errors.ts",
-    "./types": "./src/types.ts"
+    "./types": "./src/types.ts",
+    "./crypto": "./src/crypto.ts"
   },
   "scripts": {
     "type-check": "tsc --noEmit",

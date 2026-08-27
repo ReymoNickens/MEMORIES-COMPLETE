@@ -75,7 +75,14 @@ export default function OwnerDashboard() {
 
   return (
     <div className="min-h-screen bg-ev-page p-6" data-tenant="memories-nc">
-      <h1 className="text-h1 text-ev-dark font-display mb-6">Owner Dashboard</h1>
+      <h1 className="text-h1 text-ev-dark font-display mb-2">Owner Dashboard</h1>
+      <nav className="flex flex-wrap gap-3 text-body-md mb-6">
+        <a className="underline" href="/dashboard/shift-close">Shift close</a>
+        <a className="underline" href="/organiser">Organiser</a>
+        <a className="underline" href="/floor">Floor</a>
+        <a className="underline" href="/reissue">Reissue</a>
+        <a className="underline" href="/staff/claim">Stations</a>
+      </nav>
 
       {/* Key metrics */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
