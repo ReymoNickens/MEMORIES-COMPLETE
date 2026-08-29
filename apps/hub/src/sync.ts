@@ -1,5 +1,12 @@
 import { createClient } from '@supabase/supabase-js'
+import { decryptSecret } from '@evolveit/shared/crypto'
 import { db } from './db.js'
+
+function totpKey(): string {
+  const k = process.env['TOTP_ENCRYPTION_KEY']
+  if (!k || k.length !== 64) throw new Error('TOTP_ENCRYPTION_KEY must be a 64-char hex string')
+  return k
+}
 
 const supabase = createClient(
   process.env['NEXT_PUBLIC_SUPABASE_URL'] ?? process.env['SUPABASE_URL']!,
@@ -30,7 +37,7 @@ export async function syncDown(): Promise<void> {
     upsertTicket.run(
       t.id,
       tt?.event_id ?? '',
-      decryptSecret(t.totp_secret_enc as string),
+      decryptSecret(t.totp_secret_enc as string, totpKey()),
       t.buyer_name,
       tt?.name ?? 'General',
       t.status
@@ -85,8 +92,3 @@ export async function syncUp(): Promise<void> {
   }
 }
 
-function decryptSecret(enc: string): string {
-  // Mirror of the Edge Function encryption — base64 decode placeholder
-  // In production: AES-GCM decryption with tenant key
-  return Buffer.from(enc, 'base64').toString('utf8')
-}

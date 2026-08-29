@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServiceRole } from '@/lib/supabase/server'
 import { getStaffSession } from '@/lib/staff-session'
-import { encodeTotpSecret, randomToken, sha256Hex } from '@evolveit/shared/crypto'
+import { encryptSecret, randomToken, sha256Hex } from '@evolveit/shared/crypto'
+
+function totpKey(): string {
+  const k = process.env['TOTP_ENCRYPTION_KEY']
+  if (!k || k.length !== 64) throw new Error('TOTP_ENCRYPTION_KEY must be a 64-char hex string')
+  return k
+}
 import * as OTPAuth from 'otpauth'
 
 export async function POST(req: NextRequest) {
@@ -34,7 +40,7 @@ export async function POST(req: NextRequest) {
   const access = randomToken(18)
 
   await supabase.from('tickets').update({
-    totp_secret_enc: encodeTotpSecret(secret),
+    totp_secret_enc: encryptSecret(secret, totpKey()),
     reissue_count: (ticket.reissue_count as number) + 1,
   }).eq('id', ticket.id)
 

@@ -1,4 +1,10 @@
-import { encodeTotpSecret, randomToken, sha256Hex } from '@evolveit/shared/crypto'
+import { encryptSecret, randomToken, sha256Hex } from '@evolveit/shared/crypto'
+
+function totpKey(): string {
+  const k = process.env['TOTP_ENCRYPTION_KEY']
+  if (!k || k.length !== 64) throw new Error('TOTP_ENCRYPTION_KEY must be a 64-char hex string')
+  return k
+}
 import * as OTPAuth from 'otpauth'
 
 type ServiceClient = {
@@ -63,7 +69,7 @@ export async function issueTicketsFromCheckout(
         buyer_name: checkout.buyer_name,
         buyer_email: checkout.buyer_email,
         serial,
-        totp_secret_enc: encodeTotpSecret(secret),
+        totp_secret_enc: encryptSecret(secret, totpKey()),
         status: 'issued',
         issued_at: new Date().toISOString(),
       })

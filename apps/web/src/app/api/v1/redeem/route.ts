@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServiceRole } from '@/lib/supabase/server'
 import { parseQrPayload, verifyTotp } from '@evolveit/shared/totp'
-import { decodeTotpSecret, hashDeviceKey } from '@evolveit/shared/crypto'
+import { decryptSecret, hashDeviceKey } from '@evolveit/shared/crypto'
+
+function totpKey(): string {
+  const k = process.env['TOTP_ENCRYPTION_KEY']
+  if (!k || k.length !== 64) throw new Error('TOTP_ENCRYPTION_KEY must be a 64-char hex string')
+  return k
+}
 import { getStaffSession } from '@/lib/staff-session'
 import type { RedeemResult } from '@evolveit/shared/types'
 
@@ -64,7 +70,7 @@ export async function POST(req: NextRequest) {
 
   if (!ticket) return NextResponse.json({ ok: false, reason: 'not_found' } satisfies RedeemResult)
 
-  const secret = decodeTotpSecret(ticket.totp_secret_enc as string)
+  const secret = decryptSecret(ticket.totp_secret_enc as string, totpKey())
   if (!verifyTotp(secret, totpCode, 1)) {
     return NextResponse.json({ ok: false, reason: 'invalid_code' } satisfies RedeemResult)
   }

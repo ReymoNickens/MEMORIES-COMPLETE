@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServiceRole } from '@/lib/supabase/server'
-import { decodeTotpSecret, sha256Hex } from '@evolveit/shared/crypto'
+import { decryptSecret, sha256Hex } from '@evolveit/shared/crypto'
+
+function totpKey(): string {
+  const k = process.env['TOTP_ENCRYPTION_KEY']
+  if (!k || k.length !== 64) throw new Error('TOTP_ENCRYPTION_KEY must be a 64-char hex string')
+  return k
+}
 
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const access = req.nextUrl.searchParams.get('access')
@@ -32,7 +38,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     serial: ticket.serial,
     buyer_name: ticket.buyer_name,
     status: ticket.status,
-    totp_secret: decodeTotpSecret(ticket.totp_secret_enc as string),
+    totp_secret: decryptSecret(ticket.totp_secret_enc as string, totpKey()),
     event_name: event.name,
     event_date: event.starts_at,
     ticket_type_name: type.name,
