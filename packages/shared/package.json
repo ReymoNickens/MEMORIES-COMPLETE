@@ -14,7 +14,8 @@
   },
   "scripts": {
     "type-check": "tsc --noEmit",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "node --experimental-strip-types --test src/crypto.test.ts"
   },
   "dependencies": {
     "otpauth": "^9.3.4"
