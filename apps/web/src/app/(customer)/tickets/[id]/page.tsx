@@ -3,14 +3,12 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useSearchParams } from 'next/navigation'
 import QRCode from 'qrcode.react'
-import { generateQrPayload } from '@evolveit/shared/totp'
 import { Wordmark } from '@/components/Wordmark'
 
 interface TicketData {
   id: string
   serial: string
   buyer_name: string
-  totp_secret: string
   event_name: string
   event_date: string
   ticket_type_name: string
@@ -33,12 +31,15 @@ export default function TicketPage() {
       .then((data: TicketData & { error?: string }) => {
         if (data.error) return
         setTicket(data)
-        const rotate = () => {
-          setQrValue(generateQrPayload(data.id, data.totp_secret))
-          setSeconds(30)
+        const rotate = async () => {
+          const qr = await fetch(`/api/tickets/${id}/qr?access=${access}`).then(r => r.json()) as { payload?: string; seconds_left?: number }
+          if (qr.payload) {
+            setQrValue(qr.payload)
+            setSeconds(qr.seconds_left ?? 30)
+          }
         }
-        rotate()
-        intervalRef.current = setInterval(rotate, 30_000)
+        void rotate()
+        intervalRef.current = setInterval(() => { void rotate() }, 30_000)
       })
     const tick = setInterval(() => setSeconds(s => (s <= 1 ? 30 : s - 1)), 1000)
     return () => {
