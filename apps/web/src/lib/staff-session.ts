@@ -14,7 +14,9 @@ export interface StaffSession {
 const COOKIE = 'evolveit_staff'
 
 function secret(): string {
-  return process.env['HUB_SECRET'] || process.env['SUPABASE_JWT_SECRET'] || 'evolveit-dev-only-not-for-prod'
+  const s = process.env['HUB_SECRET'] || process.env['SUPABASE_JWT_SECRET']
+  if (!s) throw new Error('HUB_SECRET or SUPABASE_JWT_SECRET must be set')
+  return s
 }
 
 export function encodeStaffSession(session: StaffSession): string {

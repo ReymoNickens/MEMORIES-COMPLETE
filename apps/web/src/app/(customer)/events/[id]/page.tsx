@@ -47,8 +47,10 @@ export default function EventPage() {
   async function pay() {
     setErr('')
     if (!normalisePhone(buyerPhone)) { setErr('Enter a valid Ghana number'); return }
-    const first = ticketTypes.find(t => (quantities[t.id] ?? 0) > 0)
-    if (!first) { setErr('Select tickets'); return }
+    const selected = ticketTypes.filter(t => (quantities[t.id] ?? 0) > 0)
+    if (selected.length === 0) { setErr('Select tickets'); return }
+    if (selected.length > 1) { setErr('Please purchase one ticket type at a time'); return }
+    const first = selected[0]!
     setLoading(true)
     const res = await fetch('/api/checkout/initiate', {
       method: 'POST',

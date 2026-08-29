@@ -1,11 +1,12 @@
 import { encryptSecret, randomToken, sha256Hex } from '@evolveit/shared/crypto'
+import { sendTicketDelivery } from '@evolveit/shared/notify'
+import * as OTPAuth from 'otpauth'
 
 function totpKey(): string {
   const k = process.env['TOTP_ENCRYPTION_KEY']
   if (!k || k.length !== 64) throw new Error('TOTP_ENCRYPTION_KEY must be a 64-char hex string')
   return k
 }
-import * as OTPAuth from 'otpauth'
 
 type ServiceClient = {
   from: (table: string) => any
@@ -104,7 +105,7 @@ export async function issueTicketsFromCheckout(
     accessTokens.push(access)
   }
 
-  await supabase.from('pending_checkouts').update({ status: 'issued' }).eq('id', checkout.id)
+  await supabase.from('pending_checkouts').update({ status: 'issued', access_tokens: accessTokens }).eq('id', checkout.id)
 
   const perTicket = Math.round(checkout.amount_pesewas / checkout.quantity)
   for (const id of ticketIds) {
@@ -132,5 +133,47 @@ export async function issueTicketsFromCheckout(
     ])
   }
 
+  // Fire-and-forget notifications — failure must not break ticket issuance
+  void notifyBuyers(supabase, checkout, ticketIds, accessTokens)
+
   return { ticket_ids: ticketIds, access_tokens: accessTokens }
+}
+
+async function notifyBuyers(
+  supabase: ServiceClient,
+  checkout: { buyer_phone: string; buyer_name: string; event_id: string; paystack_ref: string },
+  ticketIds: string[],
+  accessTokens: string[],
+): Promise<void> {
+  try {
+    const { data: event } = await supabase
+      .from('events')
+      .select('name, starts_at')
+      .eq('id', checkout.event_id)
+      .single()
+    const { data: serials } = await supabase
+      .from('tickets')
+      .select('id, serial')
+      .in('id', ticketIds)
+
+    const appUrl = process.env['APP_URL'] ?? process.env['NEXT_PUBLIC_APP_URL'] ?? ''
+    const serialMap = Object.fromEntries((serials ?? []).map((s: { id: string; serial: string }) => [s.id, s.serial]))
+
+    for (let i = 0; i < ticketIds.length; i++) {
+      const id = ticketIds[i]
+      const token = accessTokens[i]
+      if (!id || !token) continue
+      await sendTicketDelivery({
+        buyerPhone: checkout.buyer_phone,
+        buyerName: checkout.buyer_name,
+        eventName: (event as { name: string } | null)?.name ?? 'Your event',
+        eventDate: (event as { starts_at: string } | null)?.starts_at ?? '',
+        ticketSerial: serialMap[id] ?? id,
+        deepLink: `${appUrl}/tickets/${id}?access=${token}`,
+        venueName: 'Memories Night Club',
+      })
+    }
+  } catch (err) {
+    console.error('Ticket notification failed:', err instanceof Error ? err.message : 'unknown')
+  }
 }

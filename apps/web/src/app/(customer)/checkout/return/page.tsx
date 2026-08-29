@@ -33,11 +33,20 @@ export default function CheckoutReturnPage() {
     if (!ref || demo) return
     const t = setInterval(async () => {
       const res = await fetch(`/api/tickets/status?ref=${ref}`)
-      const data = await res.json() as { issued?: boolean; ticket_ids?: string[] }
-      if (data.issued && data.ticket_ids?.[0]) {
+      const data = await res.json() as { issued?: boolean; ticket_ids?: string[]; access_tokens?: string[]; failed?: boolean }
+      if (data.failed) {
+        clearInterval(t)
+        setMsg('Payment failed or cancelled. Please try again.')
+        return
+      }
+      if (data.issued && data.ticket_ids?.[0] && data.access_tokens?.[0]) {
         clearInterval(t)
         setTickets(data.ticket_ids)
-        setMsg('Issued')
+        setMsg('Issued! Redirecting…')
+        const id = data.ticket_ids[0]
+        const token = data.access_tokens[0]
+        sessionStorage.setItem(`ticket-access-${id}`, token)
+        router.push(`/tickets/${id}?access=${token}`)
       }
     }, 2000)
     return () => clearInterval(t)

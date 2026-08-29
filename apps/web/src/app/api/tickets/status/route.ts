@@ -8,7 +8,7 @@ export async function GET(req: NextRequest) {
   const supabase = createSupabaseServiceRole()
   const { data: checkout } = await supabase
     .from('pending_checkouts')
-    .select('id, status')
+    .select('id, status, access_tokens')
     .eq('paystack_ref', ref)
     .single()
 
@@ -24,5 +24,6 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     issued: true,
     ticket_ids: (payments ?? []).map((p: { ticket_id: string }) => p.ticket_id),
+    access_tokens: (checkout.access_tokens as string[] | null) ?? [],
   })
 }

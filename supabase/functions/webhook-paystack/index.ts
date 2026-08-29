@@ -185,9 +185,20 @@ async function generateSerial(tenantId: string): Promise<string> {
 }
 
 async function encryptSecret(secret: Uint8Array): Promise<string> {
-  // In production: use AES-GCM with the tenant's encryption key from env/vault
-  // For now: base64 encode (replace with proper encryption before go-live)
-  return btoa(String.fromCharCode(...secret))
+  const keyHex = Deno.env.get('TOTP_ENCRYPTION_KEY')
+  if (!keyHex || keyHex.length !== 64) throw new Error('TOTP_ENCRYPTION_KEY must be a 64-char hex string')
+
+  const keyBytes = new Uint8Array(keyHex.match(/.{2}/g)!.map(b => parseInt(b, 16)))
+  const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt'])
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, tagLength: 128 }, cryptoKey, secret)
+
+  const toHex = (b: Uint8Array) => Array.from(b).map(x => x.toString(16).padStart(2, '0')).join('')
+  const ctBytes = new Uint8Array(ct)
+  // ct from AES-GCM includes the 16-byte auth tag appended at the end
+  const ciphertext = ctBytes.slice(0, ctBytes.length - 16)
+  const tag = ctBytes.slice(ctBytes.length - 16)
+  return `${toHex(iv)}:${toHex(tag)}:${toHex(ciphertext)}`
 }
 
 async function triggerRefund(ref: string, reason: string): Promise<void> {
