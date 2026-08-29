@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServiceRole } from '@/lib/supabase/server'
-import { hashPin } from '@evolveit/shared/crypto'
+import { verifyPin } from '@evolveit/shared/crypto'
 import { normalisePhone } from '@evolveit/shared/phone'
-import { staffCookieHeader, type StaffSession } from '@/lib/staff-session'
+import { staffCookieHeader } from '@/lib/staff-session'
 import type { StaffRole } from '@evolveit/shared/types'
 
 export async function POST(req: NextRequest) {
@@ -25,22 +25,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unknown staff phone' }, { status: 401 })
   }
 
-  const pinHash = hashPin(body.pin, user.tenant_id as string)
   const { data: cred } = await supabase
     .from('staff_credentials')
-    .select('user_id')
+    .select('user_id, pin_hash')
     .eq('user_id', user.id)
-    .eq('pin_hash', pinHash)
     .single()
 
-  if (!cred) return NextResponse.json({ error: 'Wrong PIN' }, { status: 401 })
+  const pepper = process.env['PIN_PEPPER'] ?? ''
+  if (!cred || !verifyPin(body.pin, user.tenant_id as string, cred.pin_hash as string, pepper)) {
+    return NextResponse.json({ error: 'Wrong PIN' }, { status: 401 })
+  }
 
   const { data: roles } = await supabase
     .from('user_roles')
     .select('role')
     .eq('user_id', user.id)
 
-  const session: StaffSession = {
+  const session = {
     user_id: user.id,
     tenant_id: user.tenant_id as string,
     full_name: user.full_name as string,

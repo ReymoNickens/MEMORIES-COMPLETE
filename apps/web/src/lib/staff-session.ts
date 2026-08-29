@@ -9,23 +9,40 @@ export interface StaffSession {
   roles: StaffRole[]
   station_kind?: string
   station_label?: string
+  iat: number
+  exp: number
 }
 
-const COOKIE = 'evolveit_staff'
+const COOKIE = 'memories_staff'
+const TWELVE_HOURS = 12 * 60 * 60
 
-function secret(): string {
-  return process.env['HUB_SECRET'] || process.env['SUPABASE_JWT_SECRET'] || 'evolveit-dev-only-not-for-prod'
+export function staffSessionSecret(): string {
+  const explicit = process.env['STAFF_SESSION_SECRET'] || process.env['HUB_SECRET']
+  if (explicit) return explicit
+  if (process.env['EVOLVEIT_DEMO'] === '1') return 'evolveit-demo-staff-session-not-for-prod'
+  throw new Error('STAFF_SESSION_SECRET is required outside demo mode')
 }
 
-export function encodeStaffSession(session: StaffSession): string {
-  return signPayload(JSON.stringify(session), secret())
+export function encodeStaffSession(session: Omit<StaffSession, 'iat' | 'exp'>): string {
+  const now = Math.floor(Date.now() / 1000)
+  const full: StaffSession = { ...session, iat: now, exp: now + TWELVE_HOURS }
+  return signPayload(JSON.stringify(full), staffSessionSecret())
 }
 
 export function decodeStaffSession(token: string): StaffSession | null {
-  const raw = verifySignedPayload(token, secret())
+  let secret: string
+  try {
+    secret = staffSessionSecret()
+  } catch {
+    return null
+  }
+  const raw = verifySignedPayload(token, secret)
   if (!raw) return null
   try {
-    return JSON.parse(raw) as StaffSession
+    const parsed = JSON.parse(raw) as StaffSession
+    if (!parsed.user_id || !parsed.tenant_id || !parsed.exp) return null
+    if (parsed.exp < Math.floor(Date.now() / 1000)) return null
+    return parsed
   } catch {
     return null
   }
@@ -38,9 +55,10 @@ export async function getStaffSession(): Promise<StaffSession | null> {
   return decodeStaffSession(token)
 }
 
-export function staffCookieHeader(session: StaffSession): string {
+export function staffCookieHeader(session: Omit<StaffSession, 'iat' | 'exp'>): string {
   const value = encodeStaffSession(session)
-  return `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${12 * 60 * 60}`
+  const secure = process.env['NODE_ENV'] === 'production' ? '; Secure' : ''
+  return `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${TWELVE_HOURS}${secure}`
 }
 
 export function clearStaffCookieHeader(): string {
