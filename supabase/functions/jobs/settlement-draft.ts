@@ -32,13 +32,15 @@ Deno.serve(async (req) => {
 
     if (existing) continue
 
-    // Get organiser from submission
+    // Get organiser from submission — take the most recently reviewed one if multiple exist
     const { data: submission } = await supabase
       .from('organiser_submissions')
       .select('organiser_id, comp_allowance')
       .eq('event_id', event.id)
       .eq('status', 'approved')
-      .single()
+      .order('reviewed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
 
     if (!submission) continue
 

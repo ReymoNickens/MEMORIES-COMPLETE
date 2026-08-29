@@ -73,87 +73,93 @@ async function handleChargeSuccess(data: Record<string, unknown>) {
   }
 }
 
-async function issueTickets(ref: string, metadata: Record<string, unknown>) {
-  const ticketTypeId = metadata['ticket_type_id'] as string
-  const buyerUserId = metadata['buyer_user_id'] as string | undefined
-  const buyerPhone = metadata['buyer_phone'] as string
-  const buyerName = metadata['buyer_name'] as string
-  const buyerEmail = metadata['buyer_email'] as string
-  const quantity = (metadata['quantity'] as number) || 1
+async function issueTickets(ref: string, _metadata: Record<string, unknown>) {
+  // Look up pending_checkout by paystack_ref to get all context atomically
+  const { data: checkout } = await supabase
+    .from('pending_checkouts')
+    .select('*')
+    .eq('paystack_ref', ref)
+    .neq('status', 'issued')
+    .maybeSingle()
 
-  // Atomic stock decrement
-  const { data: updated, error } = await supabase.rpc('decrement_ticket_stock', {
-    p_ticket_type_id: ticketTypeId,
-    p_quantity: quantity,
+  if (!checkout) return  // Already issued (deduplication) or no checkout for this ref
+
+  const { id: checkoutId, tenant_id, event_id, ticket_type_id, quantity,
+          buyer_name, buyer_phone, buyer_email, amount_pesewas } = checkout
+
+  // Generate all per-ticket material before the atomic RPC
+  const totpSecretsEnc: string[] = []
+  const serials: string[] = []
+  const tokenHashes: string[] = []
+  const rawTokens: string[] = []
+
+  for (let i = 0; i < quantity; i++) {
+    // Generate a proper base32-encoded TOTP secret (20 random bytes)
+    const secretBytes = crypto.getRandomValues(new Uint8Array(20))
+    const secretBase32 = toBase32(secretBytes)
+    totpSecretsEnc.push(await encryptSecret(new TextEncoder().encode(secretBase32)))
+
+    const year = new Date().getFullYear()
+    serials.push(`MNC-${year}-${toHex(crypto.getRandomValues(new Uint8Array(4))).toUpperCase()}`)
+
+    const rawToken = toHex(crypto.getRandomValues(new Uint8Array(18)))
+    rawTokens.push(rawToken)
+    tokenHashes.push(await sha256Hex(rawToken))
+  }
+
+  // Atomic: stock decrement + all ticket inserts + ledger entries in one transaction
+  const { data, error } = await supabase.rpc('issue_tickets_atomic', {
+    p_checkout_id:    checkoutId,
+    p_tenant_id:      tenant_id,
+    p_event_id:       event_id,
+    p_ticket_type_id: ticket_type_id,
+    p_quantity:       quantity,
+    p_buyer_name:     buyer_name,
+    p_buyer_phone:    buyer_phone,
+    p_buyer_email:    buyer_email,
+    p_paystack_ref:   ref,
+    p_amount_pesewas: amount_pesewas,
+    p_fee_pesewas:    0,
+    p_method:         'momo',
+    p_totp_secrets:   totpSecretsEnc,
+    p_serials:        serials,
+    p_token_hashes:   tokenHashes,
   })
 
-  if (error || !updated || updated.length === 0) {
-    // Stock exhausted — trigger refund
-    await triggerRefund(ref, 'sold_out')
+  if (error) {
+    if (error.message?.includes('sold_out')) {
+      await triggerRefund(ref, 'sold_out')
+    } else {
+      console.error('issue_tickets_atomic failed:', error.message)
+    }
     return
   }
 
-  const ticketTypeData = updated[0] as { event_id: string; tenant_id: string; price_pesewas: number; payment_id: string }
+  const ticketIds = ((data ?? []) as Array<{ ticket_id: string }>).map(r => r.ticket_id)
 
-  // Retrieve the payment id for ledger entries
-  const { data: paymentRow } = await supabase
-    .from('ticket_payments')
-    .select('id')
-    .eq('paystack_ref', ref)
+  // Fetch event name for notification
+  const { data: event } = await supabase
+    .from('events')
+    .select('name, starts_at')
+    .eq('id', event_id)
     .single()
 
-  const paymentId = paymentRow?.id ?? ticketTypeData.payment_id
+  const appUrl = Deno.env.get('NEXT_PUBLIC_APP_URL') ?? ''
 
-  // Create ticket(s) — generate TOTP secrets
-  for (let i = 0; i < quantity; i++) {
-    const serial = await generateSerial(ticketTypeData.tenant_id)
-    const totpSecret = crypto.getRandomValues(new Uint8Array(20))
-    const totpSecretEnc = await encryptSecret(totpSecret)
-
-    const { error: ticketErr } = await supabase.from('tickets').insert({
-      ticket_type_id: ticketTypeId,
-      event_id: ticketTypeData.event_id,
-      tenant_id: ticketTypeData.tenant_id,
-      buyer_user_id: buyerUserId,
-      buyer_phone: buyerPhone,
-      buyer_name: buyerName,
-      buyer_email: buyerEmail,
-      serial,
-      totp_secret_enc: totpSecretEnc,
-      status: 'issued',
-      issued_at: new Date().toISOString(),
+  // Send ticket delivery notifications
+  for (let i = 0; i < ticketIds.length; i++) {
+    const ticketId = ticketIds[i]
+    const serial = serials[i]
+    const rawToken = rawTokens[i]
+    if (!ticketId) continue
+    await sendNotification({
+      buyerPhone: buyer_phone,
+      buyerName: buyer_name,
+      eventName: (event as { name: string } | null)?.name ?? 'Your event',
+      eventDate: (event as { starts_at: string } | null)?.starts_at ?? '',
+      ticketSerial: serial ?? ticketId,
+      deepLink: `${appUrl}/tickets/${ticketId}?access=${rawToken}`,
     })
-
-    if (ticketErr) {
-      console.error('Failed to insert ticket:', ticketErr.message)
-      continue
-    }
-
-    // Write ledger entries
-    await supabase.from('ledger_entries').insert([
-      {
-        tenant_id: ticketTypeData.tenant_id,
-        event_id: ticketTypeData.event_id,
-        account: 'momo_clearing',
-        direction: 'DR',
-        amount_pesewas: ticketTypeData.price_pesewas,
-        ref_type: 'ticket_payment',
-        ref_id: paymentId,
-        memo: `Ticket purchase: ${serial}`,
-      },
-      {
-        tenant_id: ticketTypeData.tenant_id,
-        event_id: ticketTypeData.event_id,
-        account: 'ticket_revenue',
-        direction: 'CR',
-        amount_pesewas: ticketTypeData.price_pesewas,
-        ref_type: 'ticket_payment',
-        ref_id: paymentId,
-      },
-    ])
-
-    // Enqueue WhatsApp delivery
-    await enqueueDelivery({ type: 'ticket', ticket_serial: serial, buyer_phone: buyerPhone, buyer_name: buyerName })
   }
 }
 
@@ -211,10 +217,101 @@ async function confirmReservation(ref: string, metadata: Record<string, unknown>
     .eq('status', 'pending')
 }
 
-async function generateSerial(tenantId: string): Promise<string> {
-  const year = new Date().getFullYear()
-  const random = Math.random().toString(36).substring(2, 8).toUpperCase()
-  return `MNC-${year}-${random}`
+// ── Encoding helpers ─────────────────────────────────────────────────────────
+
+const BASE32_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+
+function toBase32(bytes: Uint8Array): string {
+  let result = ''
+  let bits = 0
+  let value = 0
+  for (const byte of bytes) {
+    value = (value << 8) | byte
+    bits += 8
+    while (bits >= 5) {
+      result += BASE32_CHARS[(value >>> (bits - 5)) & 31]
+      bits -= 5
+    }
+  }
+  if (bits > 0) result += BASE32_CHARS[(value << (5 - bits)) & 31]
+  return result
+}
+
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input)
+  const hash = await crypto.subtle.digest('SHA-256', data)
+  return toHex(new Uint8Array(hash))
+}
+
+// ── Notification delivery ─────────────────────────────────────────────────────
+
+async function sendNotification(params: {
+  buyerPhone: string; buyerName: string; eventName: string
+  eventDate: string; ticketSerial: string; deepLink: string
+}): Promise<void> {
+  const phoneNumberId = Deno.env.get('WHATSAPP_PHONE_NUMBER_ID')
+  const accessToken = Deno.env.get('WHATSAPP_ACCESS_TOKEN')
+
+  if (phoneNumberId && accessToken) {
+    try {
+      const res = await fetch(
+        `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messaging_product: 'whatsapp',
+            to: params.buyerPhone.replace('+', ''),
+            type: 'template',
+            template: {
+              name: 'ticket_delivery',
+              language: { code: 'en' },
+              components: [{
+                type: 'body',
+                parameters: [
+                  { type: 'text', text: params.buyerName },
+                  { type: 'text', text: params.eventName },
+                  { type: 'text', text: params.eventDate },
+                  { type: 'text', text: params.deepLink },
+                  { type: 'text', text: params.ticketSerial },
+                ],
+              }],
+            },
+          }),
+        }
+      )
+      if (res.ok) return
+      console.error('WhatsApp delivery failed, status:', res.status)
+    } catch (err) {
+      console.error('WhatsApp delivery error:', err)
+    }
+  }
+
+  // SMS fallback via Arkesel
+  const apiKey = Deno.env.get('ARKESEL_API_KEY')
+  const senderId = Deno.env.get('ARKESEL_SENDER_ID') ?? 'Memories'
+  if (!apiKey) {
+    console.error('No notification credentials — delivery not sent for', params.ticketSerial)
+    return
+  }
+  try {
+    const res = await fetch('https://sms.arkesel.com/api/v2/sms/send', {
+      method: 'POST',
+      headers: { 'api-key': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sender: senderId,
+        message: `Your ${params.eventName} ticket is ready. View it here: ${params.deepLink} — Memories Night Club`,
+        recipients: [params.buyerPhone],
+      }),
+    })
+    if (!res.ok) console.error('Arkesel SMS error:', res.status)
+  } catch (err) {
+    console.error('Arkesel SMS error:', err)
+  }
 }
 
 async function encryptSecret(secret: Uint8Array): Promise<string> {

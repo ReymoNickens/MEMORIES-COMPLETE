@@ -33,6 +33,7 @@ export async function issueTicketsFromCheckout(
     buyer_email: string
     amount_pesewas: number
     paystack_ref: string
+    use_installments?: boolean
   },
   opts?: { fee_pesewas?: number; method?: string }
 ): Promise<{ ticket_ids: string[]; access_tokens: string[] }> {
@@ -88,10 +89,51 @@ export async function issueTicketsFromCheckout(
   const encryptedTokens = rawTokens.map(t => encryptSecret(t, totpKey()))
   void supabase.from('pending_checkouts').update({ access_tokens: encryptedTokens }).eq('id', checkout.id)
 
+  // Create payment_plans rows for installment purchases (one per ticket)
+  if (checkout.use_installments && ticketIds.length > 0) {
+    void createPaymentPlans(supabase, checkout, ticketIds)
+  }
+
   // Fire-and-forget notifications — failure must not break ticket issuance
   void notifyBuyers(supabase, checkout, ticketIds, rawTokens)
 
   return { ticket_ids: ticketIds, access_tokens: rawTokens }
+}
+
+async function createPaymentPlans(
+  supabase: ServiceClient,
+  checkout: { event_id: string; amount_pesewas: number; quantity: number },
+  ticketIds: string[],
+): Promise<void> {
+  try {
+    const { data: event } = await supabase
+      .from('events')
+      .select('starts_at')
+      .eq('id', checkout.event_id)
+      .single()
+
+    // Deadline is 48 hours before the event starts
+    const startsAt = (event as { starts_at: string } | null)?.starts_at
+    if (!startsAt) {
+      console.error('Cannot create payment_plans: event starts_at not found')
+      return
+    }
+    const deadlineAt = new Date(new Date(startsAt).getTime() - 48 * 60 * 60 * 1000).toISOString()
+    const perTicketPesewas = Math.round(checkout.amount_pesewas / checkout.quantity)
+
+    const rows = ticketIds.map(ticketId => ({
+      ticket_id: ticketId,
+      total_pesewas: perTicketPesewas,
+      installments_n: 2,
+      deadline_at: deadlineAt,
+      status: 'active',
+    }))
+
+    const { error } = await supabase.from('payment_plans').insert(rows)
+    if (error) console.error('payment_plans insert failed:', error.message)
+  } catch (err) {
+    console.error('createPaymentPlans error:', err instanceof Error ? err.message : 'unknown')
+  }
 }
 
 async function notifyBuyers(
