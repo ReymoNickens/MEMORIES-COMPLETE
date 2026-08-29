@@ -40,7 +40,6 @@ export default function ScannerPage() {
     }, 10_000)
 
     return () => {
-      // BrowserQRCodeReader cleanup
       try { (reader as unknown as { reset?: () => void }).reset?.() } catch { /* ignore */ }
       clearInterval(hubPing)
     }
@@ -65,7 +64,6 @@ export default function ScannerPage() {
 
     let res: RedeemResult | null = null
 
-    // Try hub first (3s timeout), then fall back to cloud (10s timeout)
     try {
       const hubRes = await fetch(`${HUB_URL}/v1/redeem`, {
         method: 'POST',
@@ -148,7 +146,6 @@ export default function ScannerPage() {
 
   return (
     <div className="fixed inset-0 bg-black overflow-hidden" style={{ touchAction: 'none' }}>
-      {/* Camera viewfinder */}
       <video
         ref={videoRef}
         className="absolute inset-0 w-full h-full object-cover"
@@ -157,13 +154,17 @@ export default function ScannerPage() {
         playsInline
       />
 
-      {/* Status bar */}
-      <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 py-3 bg-black/40">
-        <span className="text-micro text-white/70">{DOOR_LABEL}</span>
-        <div className={`w-3 h-3 rounded-full ${statusDot}`} />
+      <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 py-4 bg-black/55">
+        <div>
+          <p className="text-[11px] uppercase tracking-[0.28em] text-white">Memories<span className="text-[#B8122A]">.</span></p>
+          <p className="mt-1 text-[11px] uppercase tracking-[0.2em] text-white/70">{DOOR_LABEL}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-[0.18em] text-white/60">{hubStatus}</span>
+          <div className={`h-2.5 w-2.5 rounded-full ${statusDot}`} />
+        </div>
       </div>
 
-      {/* Result overlay */}
       {scanState !== 'idle' && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center"
@@ -171,7 +172,7 @@ export default function ScannerPage() {
         >
           {scanState === 'pass' && (
             <>
-              <div className="text-white text-[120px] leading-none mb-4">✓</div>
+              <div className="text-white text-[120px] leading-none mb-4">\u2713</div>
               <p className="text-scanner-lg text-white font-bold">ADMIT</p>
               {result?.holder_name && (
                 <p className="text-scanner-md text-white mt-2">{result.holder_name}</p>
@@ -184,7 +185,7 @@ export default function ScannerPage() {
 
           {scanState === 'fail' && (
             <>
-              <div className="text-white text-[120px] leading-none mb-4">✕</div>
+              <div className="text-white text-[120px] leading-none mb-4">\u2715</div>
               <p className="text-scanner-lg text-white font-bold capitalize">
                 {result?.reason?.replace(/_/g, ' ') ?? 'Invalid'}
               </p>
@@ -193,12 +194,12 @@ export default function ScannerPage() {
 
           {scanState === 'already_used' && (
             <>
-              <div className="text-white text-[80px] leading-none mb-4">⚠</div>
+              <div className="text-white text-[80px] leading-none mb-4">\u26a0</div>
               <p className="text-scanner-lg text-white font-bold">ALREADY USED</p>
               {result?.scanned_at && (
                 <p className="text-scanner-md text-white mt-2">
                   Scanned {new Date(result.scanned_at).toLocaleTimeString('en-GH', { hour: '2-digit', minute: '2-digit' })}
-                  {result.door_label ? ` · ${result.door_label}` : ''}
+                  {result.door_label ? ` \u00b7 ${result.door_label}` : ''}
                 </p>
               )}
             </>
