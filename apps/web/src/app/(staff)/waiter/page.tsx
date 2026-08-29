@@ -1,51 +1,37 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { createSupabaseClient } from '@/lib/supabase/client'
 import { formatAmount } from '@evolveit/shared/money'
 
-interface VenueTable {
-  id: string
-  label: string
-  zone: string
-  orders: TableOrder[]
-}
-
+interface OrderItem { product_name: string; quantity: number; status: string }
 interface TableOrder {
   id: string
   amount_pesewas: number
   payment_source: string
   status: string
   created_at: string
-  items: Array<{ product_name: string; quantity: number; status: string }>
+  order_items: OrderItem[]
 }
+interface WaiterTable { id: string; label: string; zone: string | null; orders: TableOrder[] }
 
 export default function WaiterPage() {
-  const [tables, setTables] = useState<VenueTable[]>([])
-  const [selectedTable, setSelectedTable] = useState<VenueTable | null>(null)
+  const [tables, setTables] = useState<WaiterTable[]>([])
+  const [selectedTable, setSelectedTable] = useState<WaiterTable | null>(null)
   const [cashAmount, setCashAmount] = useState('')
   const [showCashSheet, setShowCashSheet] = useState<string | null>(null)
 
-  useEffect(() => {
-    const supabase = createSupabaseClient()
-    void supabase
-      .from('venue_tables')
-      .select(`
-        id, label, zone,
-        orders!venue_table_id(id, amount_pesewas, payment_source, status, created_at,
-          order_items(product_name, quantity, status))
-      `)
-      .eq('is_active', true)
-      .then(({ data }) => {
-        if (data) setTables(data as unknown as VenueTable[])
-      })
-  }, [])
+  async function reload() {
+    const res = await fetch('/api/waiter/tables')
+    const data = await res.json() as { tables?: WaiterTable[] }
+    setTables(data.tables ?? [])
+  }
 
-  function tableStatus(table: VenueTable): 'empty' | 'pending' | 'done' {
-    const active = table.orders.filter(o => o.status !== 'voided' && o.status !== 'complete')
-    if (active.length === 0) return 'empty'
-    const anyPending = active.some(o =>
-      o.items.some(i => i.status !== 'delivered' && i.status !== 'voided')
+  useEffect(() => { void reload() }, [])
+
+  function tableStatus(table: WaiterTable): 'empty' | 'pending' | 'done' {
+    if (table.orders.length === 0) return 'empty'
+    const anyPending = table.orders.some(o =>
+      (o.order_items ?? []).some(i => i.status !== 'delivered' && i.status !== 'voided')
     )
     return anyPending ? 'pending' : 'done'
   }
@@ -59,13 +45,14 @@ export default function WaiterPage() {
   async function collectCash(orderId: string) {
     const pesewas = Math.round(parseFloat(cashAmount) * 100)
     if (!pesewas || isNaN(pesewas)) return
-    const supabase = createSupabaseClient()
-    await supabase
-      .from('cash_collections')
-      .update({ physical_amount_pesewas: pesewas, handed_in_at: new Date().toISOString() })
-      .eq('order_id', orderId)
+    await fetch('/api/orders/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order_id: orderId, cash_pesewas: pesewas }),
+    })
     setShowCashSheet(null)
     setCashAmount('')
+    void reload()
   }
 
   return (
@@ -74,7 +61,10 @@ export default function WaiterPage() {
         <h1 className="text-h1 text-white font-display">My Tables</h1>
       </div>
 
-      {/* Table grid */}
+      {tables.length === 0 && (
+        <p className="text-ev-muted text-body-md text-center mt-12">No active tables assigned to you.</p>
+      )}
+
       <div className="grid grid-cols-3 gap-3 p-4 max-w-lg mx-auto">
         {tables.map(table => {
           const status = tableStatus(table)
@@ -91,14 +81,13 @@ export default function WaiterPage() {
         })}
       </div>
 
-      {/* Table detail panel */}
       {selectedTable && (
         <div className="fixed inset-0 bg-black/50 z-10" onClick={() => setSelectedTable(null)}>
           <div
             className="absolute bottom-0 left-0 right-0 bg-ev-card rounded-t-2xl max-h-[80vh] overflow-y-auto p-4"
             onClick={e => e.stopPropagation()}
           >
-            <h2 className="text-h2 text-ev-dark mb-4">{selectedTable.label}</h2>
+            <h2 className="text-h2 text-ev-dark mb-4">Table {selectedTable.label}</h2>
 
             {selectedTable.orders.filter(o => o.status !== 'voided').map(order => (
               <div key={order.id} className="border border-ev-border rounded-lg p-3 mb-3">
@@ -106,14 +95,12 @@ export default function WaiterPage() {
                   <span className="text-label text-ev-muted uppercase">{order.payment_source}</span>
                   <span className="text-label text-ev-muted uppercase">{order.status}</span>
                 </div>
-
-                {order.items.map((item, i) => (
+                {(order.order_items ?? []).map((item, i) => (
                   <div key={i} className="flex justify-between text-body-md text-ev-dark py-1">
                     <span>{item.quantity}× {item.product_name}</span>
                     <span className="text-label text-ev-muted uppercase">{item.status}</span>
                   </div>
                 ))}
-
                 <div className="flex justify-between items-center mt-3 pt-2 border-t border-ev-border">
                   <span className="text-body-md font-mono text-ev-dark">{formatAmount(order.amount_pesewas)}</span>
                   {order.payment_source === 'cash' && order.status === 'paid' && (
@@ -131,7 +118,6 @@ export default function WaiterPage() {
         </div>
       )}
 
-      {/* Cash collection bottom sheet */}
       {showCashSheet && (
         <div className="fixed inset-0 bg-black/60 z-20 flex items-end">
           <div className="w-full bg-ev-card rounded-t-2xl p-6 space-y-4">

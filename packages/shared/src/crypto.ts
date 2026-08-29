@@ -8,8 +8,13 @@ export function hashPin(pin: string, tenantId: string): string {
   return sha256Hex(`${tenantId}:${pin}`)
 }
 
-export function hashDeviceKey(key: string): string {
-  return sha256Hex(key)
+// HMAC-SHA256 of the device API key using a server secret so hash-table
+// attacks against a stolen DB row fail without the server secret.
+// serverSecret defaults to HUB_SECRET env var when omitted.
+export function hashDeviceKey(key: string, serverSecret?: string): string {
+  const secret = serverSecret ?? process.env['HUB_SECRET'] ?? ''
+  if (!secret) throw new Error('HUB_SECRET must be set for device key hashing')
+  return createHmac('sha256', secret).update(key).digest('hex')
 }
 
 // Encrypt a plaintext secret with AES-256-GCM.

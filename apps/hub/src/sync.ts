@@ -15,25 +15,46 @@ const supabase = createClient(
 )
 
 export async function syncDown(): Promise<void> {
-  // Pull new/updated tickets for events starting in the next 8h
+  // Pull tickets for events starting within the next 8 hours (two-step join)
+  const now = new Date().toISOString()
   const windowEnd = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString()
 
-  const { data: tickets } = await supabase
-    .from('tickets')
-    .select(`
-      id, totp_secret_enc, buyer_name, status,
-      ticket_types(name, event_id)
-    `)
-    .eq('status', 'issued')
-    .filter('ticket_types.events.starts_at', 'lte', windowEnd)
+  const { data: upcomingEvents } = await supabase
+    .from('events')
+    .select('id')
+    .gte('starts_at', now)
+    .lte('starts_at', windowEnd)
+
+  const eventIds = (upcomingEvents ?? []).map((e: { id: string }) => e.id)
+
+  let tickets: Array<{ id: string; totp_secret_enc: string; buyer_name: string; status: string; ticket_types: { name: string; event_id: string } | null }> = []
+
+  if (eventIds.length > 0) {
+    const { data: typeRows } = await supabase
+      .from('ticket_types')
+      .select('id, event_id')
+      .in('event_id', eventIds)
+
+    const typeIds = (typeRows ?? []).map((t: { id: string }) => t.id)
+
+    if (typeIds.length > 0) {
+      const { data } = await supabase
+        .from('tickets')
+        .select('id, totp_secret_enc, buyer_name, status, ticket_types(name, event_id)')
+        .eq('status', 'issued')
+        .in('ticket_type_id', typeIds)
+
+      tickets = (data ?? []) as typeof tickets
+    }
+  }
 
   const upsertTicket = db.prepare(`
     INSERT OR REPLACE INTO hub_tickets (ticket_id, event_id, totp_secret, buyer_name, type_name, status)
     VALUES (?, ?, ?, ?, ?, ?)
   `)
 
-  for (const t of (tickets ?? [])) {
-    const tt = t.ticket_types as { name: string; event_id: string } | null
+  for (const t of tickets) {
+    const tt = t.ticket_types
     upsertTicket.run(
       t.id,
       tt?.event_id ?? '',
@@ -57,9 +78,25 @@ export async function syncDown(): Promise<void> {
     upsertRevocation.run(r.ticket_id, r.revoked_at)
   }
 
+  // Pull order status updates (bar/kitchen may have marked items via Supabase)
+  const hubOrderIds = (db.prepare("SELECT order_id FROM hub_orders WHERE status NOT IN ('complete','voided')").all() as Array<{ order_id: string }>)
+    .map(r => r.order_id)
+
+  if (hubOrderIds.length > 0) {
+    const { data: cloudOrders } = await supabase
+      .from('orders')
+      .select('id, status')
+      .in('id', hubOrderIds)
+
+    const updateOrderStatus = db.prepare('UPDATE hub_orders SET status = ? WHERE order_id = ?')
+    for (const o of (cloudOrders ?? [])) {
+      updateOrderStatus.run(o.status, o.id)
+    }
+  }
+
   db.prepare(
     "INSERT INTO sync_log (direction, type, count) VALUES ('pull', 'tickets', ?)"
-  ).run((tickets ?? []).length)
+  ).run(tickets.length)
 }
 
 export async function syncUp(): Promise<void> {
@@ -71,6 +108,7 @@ export async function syncUp(): Promise<void> {
     scanned_at: string
   }>
 
+  let pushed = 0
   for (const r of unsynced) {
     const { error } = await supabase.rpc('redeem_ticket', {
       p_ticket_id: r.ticket_id,
@@ -82,13 +120,13 @@ export async function syncUp(): Promise<void> {
 
     if (!error) {
       db.prepare('UPDATE hub_redemptions SET synced = 1 WHERE ticket_id = ?').run(r.ticket_id)
+      pushed++
     }
   }
 
-  if (unsynced.length > 0) {
+  if (pushed > 0) {
     db.prepare(
       "INSERT INTO sync_log (direction, type, count) VALUES ('push', 'redemptions', ?)"
-    ).run(unsynced.length)
+    ).run(pushed)
   }
 }
-

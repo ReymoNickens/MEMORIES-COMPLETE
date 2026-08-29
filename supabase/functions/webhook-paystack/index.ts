@@ -202,8 +202,25 @@ async function encryptSecret(secret: Uint8Array): Promise<string> {
 }
 
 async function triggerRefund(ref: string, reason: string): Promise<void> {
-  console.error(`Refund required for ref=${ref}, reason=${reason}`)
-  // TODO: call Paystack refund API
+  const secret = Deno.env.get('PAYSTACK_SECRET_KEY')
+  if (!secret) {
+    console.error(`Cannot refund ref=${ref}: PAYSTACK_SECRET_KEY not set. Reason: ${reason}`)
+    return
+  }
+  const res = await fetch('https://api.paystack.co/refund', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${secret}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ transaction: ref, merchant_note: reason }),
+  })
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    console.error(`Paystack refund failed for ref=${ref}: ${res.status} ${body}`)
+  } else {
+    console.log(`Paystack refund initiated for ref=${ref}`)
+  }
 }
 
 async function enqueueDelivery(payload: { type: string; ticket_serial: string; buyer_phone: string; buyer_name: string }): Promise<void> {
