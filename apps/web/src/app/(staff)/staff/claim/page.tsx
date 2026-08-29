@@ -8,7 +8,7 @@ const DEST: Record<string, string> = {
   door: '/scanner',
   bar: '/bar',
   kitchen: '/kitchen',
-  floor: '/floor',
+  floor: '/waiter',
   cashier: '/dashboard',
 }
 
