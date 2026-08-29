@@ -71,7 +71,14 @@ export async function POST(req: NextRequest) {
 
     const { data: order } = await supabase.from('orders').select('id').eq('paystack_ref', ref).maybeSingle()
     if (order) {
-      await supabase.from('orders').update({ status: 'paid', paid_at: new Date().toISOString() }).eq('id', order.id)
+      const { error: paidErr } = await supabase.rpc('mark_order_paid', {
+        p_order_id: order.id,
+        p_fee_pesewas: Number(payload.data.fees ?? 0) || 0,
+      })
+      if (paidErr) {
+        await supabase.from('webhook_events').delete().eq('paystack_event_id', eventId)
+        return NextResponse.json({ error: paidErr.message }, { status: 500 })
+      }
     }
 
     const { data: resv } = await supabase.from('table_reservations').select('id').eq('paystack_ref', ref).maybeSingle()
