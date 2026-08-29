@@ -43,6 +43,11 @@ const config: Config = {
           momo:       '#FFCB05',
         },
       },
+      fontFamily: {
+        display: ['var(--font-display)', 'Georgia', 'serif'],
+        body: ['var(--font-body)', 'Arial', 'sans-serif'],
+        mono: ['var(--font-mono)', 'ui-monospace', 'monospace'],
+      },
       minHeight: {
         'tap': '48px',
         'tap-lg': '56px',
