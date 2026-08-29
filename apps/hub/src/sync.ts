@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { decryptSecret } from '@evolveit/shared/crypto'
 import { db } from './db.js'
 
 const supabase = createClient(
@@ -8,7 +9,6 @@ const supabase = createClient(
 )
 
 export async function syncDown(): Promise<void> {
-  // Pull new/updated tickets for events starting in the next 8h
   const windowEnd = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString()
 
   const { data: tickets } = await supabase
@@ -37,7 +37,6 @@ export async function syncDown(): Promise<void> {
     )
   }
 
-  // Pull revocations
   const { data: revocations } = await supabase
     .from('revocations')
     .select('ticket_id, revoked_at')
@@ -56,7 +55,6 @@ export async function syncDown(): Promise<void> {
 }
 
 export async function syncUp(): Promise<void> {
-  // Push unsynced redemptions to cloud
   const unsynced = db.prepare('SELECT * FROM hub_redemptions WHERE synced = 0').all() as Array<{
     ticket_id: string
     device_id: string
@@ -83,10 +81,4 @@ export async function syncUp(): Promise<void> {
       "INSERT INTO sync_log (direction, type, count) VALUES ('push', 'redemptions', ?)"
     ).run(unsynced.length)
   }
-}
-
-function decryptSecret(enc: string): string {
-  // Mirror of the Edge Function encryption — base64 decode placeholder
-  // In production: AES-GCM decryption with tenant key
-  return Buffer.from(enc, 'base64').toString('utf8')
 }
