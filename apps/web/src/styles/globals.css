@@ -3,78 +3,46 @@
 @tailwind utilities;
 
 :root {
-  /* Backgrounds */
-  --ev-bg: #0A0B0C;
-  --ev-bg-elevated: #121416;
-  --ev-bg-page: #F8F9FA;
-  --ev-bg-card: #FFFFFF;
-
-  /* Text */
-  --ev-text-primary: #ECECE8;
-  --ev-text-secondary: #9A9E9F;
-  --ev-text-dark: #111111;
-  --ev-text-muted: #6B7380;
-
-  /* Brand */
-  --ev-brand-navy: #0B1F4B;
+  --ev-bg: #08070D;
+  --ev-bg-elevated: #100E14;
+  --ev-bg-page: #F3EDE4;
+  --ev-bg-card: #16131A;
+  --ev-text-primary: #F3EDE4;
+  --ev-text-secondary: #8A8580;
+  --ev-text-dark: #14090B;
+  --ev-text-muted: #6B6570;
+  --ev-brand-navy: #14090B;
   --ev-brand-crimson: #B8122A;
-  --ev-accent: #C8CCD4;
-
-  /* Semantic */
+  --ev-accent: #C4B8A8;
   --ev-success: #1A5C2E;
-  --ev-success-bg: #EBF5EE;
-  --ev-warning: #B86800;
-  --ev-warning-bg: #FEF9EE;
+  --ev-warning: #C47A12;
   --ev-error: #B8122A;
-  --ev-error-bg: #FEF0EF;
-  --ev-info-bg: #EEF3FB;
-
-  /* Borders */
-  --ev-border: #D8DCE2;
-  --ev-border-dark: #2A2D32;
-
-  /* MoMo brand */
+  --ev-border: #2A242C;
+  --ev-border-dark: #2A242C;
   --ev-momo: #FFCB05;
-
-  /* Spacing */
-  --ev-space-1: 4px;
-  --ev-space-2: 8px;
-  --ev-space-3: 12px;
-  --ev-space-4: 16px;
-  --ev-space-5: 24px;
-  --ev-space-6: 32px;
-  --ev-space-7: 48px;
-  --ev-space-8: 64px;
-
-  /* Radius */
-  --ev-radius-sm: 4px;
-  --ev-radius-md: 8px;
-  --ev-radius-lg: 12px;
-  --ev-radius-xl: 16px;
-  --ev-radius-2xl: 24px;
-  --ev-radius-full: 9999px;
-
-  /* Motion */
-  --ev-duration-fast: 150ms;
-  --ev-duration-base: 200ms;
-  --ev-ease: ease-out;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  :root {
-    --ev-duration-fast: 0ms;
-    --ev-duration-base: 0ms;
-  }
-}
-
-/* Memories Night Club tenant */
 [data-tenant="memories-nc"] {
   --ev-brand-primary: #B8122A;
   --ev-brand-surface: #08070D;
-  --ev-brand-surface-2: #100F18;
+  --ev-brand-surface-2: #100E14;
 }
 
-/* Typography */
-.font-display { font-family: Georgia, 'Times New Roman', serif; }
-.font-body    { font-family: Calibri, Arial, sans-serif; }
-.font-mono    { font-family: 'Courier New', Courier, monospace; }
+.font-display { font-family: var(--font-display), "Instrument Serif", Georgia, serif; }
+.font-body    { font-family: var(--font-body), Manrope, Arial, sans-serif; }
+.font-mono    { font-family: var(--font-mono), "IBM Plex Mono", ui-monospace, monospace; }
+
+.mnc-grain { position: relative; }
+.mnc-grain::after {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  opacity: 0.1;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.mnc-veil {
+  background: linear-gradient(180deg, rgba(8,7,13,0.2) 0%, rgba(8,7,13,0.55) 48%, rgba(8,7,13,0.96) 100%);
+}
