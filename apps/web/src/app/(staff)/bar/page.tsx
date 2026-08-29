@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { createSupabaseClient } from '@/lib/supabase/client'
+import { FloorShell, ageTone } from '@/components/FloorShell'
 
 interface OrderItem {
   id: string
@@ -23,11 +24,18 @@ const STATION = typeof window !== 'undefined' ? (localStorage.getItem('station')
 
 export default function BarDisplayPage() {
   const [orders, setOrders] = useState<OrderCard[]>([])
+  const [clock, setClock] = useState('')
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      setClock(new Date().toLocaleTimeString('en-GH', { hour: '2-digit', minute: '2-digit' }))
+    }, 1000)
+    return () => clearInterval(t)
+  }, [])
 
   useEffect(() => {
     const supabase = createSupabaseClient()
 
-    // Load current queue on mount
     void supabase
       .from('orders')
       .select('id, created_at, station_label, venue_tables(label), order_items(id, product_name, quantity, status)')
@@ -38,7 +46,6 @@ export default function BarDisplayPage() {
         if (data) setOrders(data.map(mapOrder))
       })
 
-    // Subscribe to new paid orders for this station
     const channel = supabase
       .channel('bar-display')
       .on(
@@ -94,71 +101,60 @@ export default function BarDisplayPage() {
       .eq('id', itemId)
   }
 
-  function elapsedLabel(iso: string): string {
-    const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
-    if (secs < 60) return `${secs}s`
-    return `${Math.floor(secs / 60)}m ${secs % 60}s`
-  }
-
   return (
-    <div className="min-h-screen bg-ev-bg p-4" data-tenant="memories-nc">
-      <div className="text-center mb-4">
-        <h1 className="text-h1 text-ev-accent">{STATION}</h1>
-      </div>
-
-      {orders.length === 0 && (
-        <p className="text-body-md text-ev-secondary text-center mt-12">No pending orders</p>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 max-w-6xl mx-auto">
-        {orders.map(order => {
-          const allReady = order.items.every(i => i.status === 'ready' || i.status === 'delivered')
-          return (
-            <div
-              key={order.id}
-              className="rounded-lg border p-4"
-              style={{ borderColor: allReady ? '#1A5C2E' : '#2A2D32', backgroundColor: '#121416' }}
-            >
-              <div className="flex items-start justify-between mb-3">
-                <span className="text-[48px] font-bold text-ev-accent leading-none">{order.token}</span>
-                <span className="text-micro text-ev-secondary">{elapsedLabel(order.created_at)}</span>
-              </div>
-              <p className="text-label text-ev-secondary mb-3">
-                {order.table_label ?? order.station_label ?? '—'}
-              </p>
-
-              <div className="space-y-2">
-                {order.items.map((item, idx) => (
-                  <button
-                    key={item.id}
-                    onClick={() => item.status === 'pending' || item.status === 'preparing'
-                      ? markItemReady(order.id, item.id)
-                      : undefined
-                    }
-                    className="w-full px-3 py-3 rounded border text-left transition-colors min-h-tap"
-                    style={{
-                      borderColor: item.status === 'ready' || item.status === 'delivered' ? '#1A5C2E' : '#C8CCD4',
-                      color: item.status === 'ready' || item.status === 'delivered' ? '#1A5C2E' : '#C8CCD4',
-                      backgroundColor: item.status === 'ready' || item.status === 'delivered' ? '#EBF5EE22' : 'transparent',
-                    }}
-                  >
-                    <span className="font-bold">{item.quantity}×</span> {item.product_name}
-                    <span className="float-right text-label uppercase">
-                      {item.status === 'ready' || item.status === 'delivered' ? 'DONE' : 'READY?'}
-                    </span>
-                  </button>
-                ))}
-              </div>
-
-              {allReady && (
-                <div className="mt-3 text-center text-label text-ev-success font-semibold uppercase tracking-wide">
-                  All Ready
+    <FloorShell station={STATION} clock={clock}>
+      <div className="p-4">
+        {orders.length === 0 && (
+          <p className="mt-16 text-center text-[14px] text-[#8A8580]">No tickets on the rail.</p>
+        )}
+        <div className="mx-auto grid max-w-6xl grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {orders.map(order => {
+            const allReady = order.items.every(i => i.status === 'ready' || i.status === 'delivered')
+            const age = ageTone(order.created_at)
+            return (
+              <div
+                key={order.id}
+                className="border p-4"
+                style={{ borderColor: allReady ? '#1A5C2E' : '#2A242C', backgroundColor: '#100E14' }}
+              >
+                <div className="mb-3 flex items-start justify-between">
+                  <span className="font-display text-[48px] leading-none">{order.token}</span>
+                  <span className={`font-mono text-[13px] ${age.className}`}>{age.label}</span>
                 </div>
-              )}
-            </div>
-          )
-        })}
+                <p className="mb-3 text-[11px] uppercase tracking-[0.2em] text-[#8A8580]">
+                  {order.table_label ?? order.station_label ?? 'Walk-up'}
+                </p>
+                <div className="space-y-2">
+                  {order.items.map(item => (
+                    <button
+                      key={item.id}
+                      onClick={() => item.status === 'pending' || item.status === 'preparing'
+                        ? void markItemReady(order.id, item.id)
+                        : undefined
+                      }
+                      className="min-h-tap w-full border px-3 py-3 text-left"
+                      style={{
+                        borderColor: item.status === 'ready' || item.status === 'delivered' ? '#1A5C2E' : '#2A242C',
+                        color: item.status === 'ready' || item.status === 'delivered' ? '#7DCF8A' : '#F3EDE4',
+                      }}
+                    >
+                      <span className="font-bold">{item.quantity}\u00d7</span> {item.product_name}
+                      <span className="float-right text-[11px] uppercase tracking-[0.16em]">
+                        {item.status === 'ready' || item.status === 'delivered' ? 'Up' : 'Ready'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                {allReady && (
+                  <div className="mt-3 text-center text-[11px] font-semibold uppercase tracking-[0.2em] text-[#7DCF8A]">
+                    All up
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
-    </div>
+    </FloorShell>
   )
 }
