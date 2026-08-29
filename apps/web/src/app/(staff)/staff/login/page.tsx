@@ -1,35 +1,81 @@
 'use client'
+
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { Wordmark } from '@/components/Wordmark'
 
 export default function StaffLoginPage() {
   const router = useRouter()
   const [phone, setPhone] = useState('')
   const [pin, setPin] = useState('')
   const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
 
   async function submit() {
     setErr('')
+    setBusy(true)
     const res = await fetch('/api/staff/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone, pin }),
     })
     const data = await res.json() as { error?: string }
-    if (!res.ok) { setErr(data.error ?? 'Login failed'); return }
+    if (!res.ok) {
+      setBusy(false)
+      setErr(data.error ?? 'That PIN does not open the house.')
+      return
+    }
     router.push('/staff/claim')
   }
 
+  function press(d: string) {
+    if (d === 'C') { setPin(''); return }
+    if (d === '\u232b') { setPin(p => p.slice(0, -1)); return }
+    setPin(p => (p.length >= 6 ? p : p + d))
+  }
+
   return (
-    <main className="min-h-screen bg-ev-page flex items-center justify-center px-4">
-      <div className="w-full max-w-sm bg-white rounded-2xl p-6 border border-ev-border">
-        <h1 className="font-display text-h1 mb-1">Staff sign in</h1>
-        <p className="text-body-md text-ev-muted mb-6">Phone + station PIN</p>
-        <input className="w-full h-12 border rounded-lg px-3 mb-3" placeholder="0244 123 456" value={phone} onChange={e => setPhone(e.target.value)} />
-        <input className="w-full h-12 border rounded-lg px-3 mb-3" placeholder="PIN" type="password" value={pin} onChange={e => setPin(e.target.value)} />
-        {err && <p className="text-ev-crimson text-body-md mb-3">{err}</p>}
-        <button onClick={() => void submit()} className="w-full h-12 rounded-lg bg-ev-crimson text-white font-semibold">Continue</button>
-        <p className="text-micro text-ev-muted mt-4">Demo: owner +233547180023 PIN 1111</p>
+    <main className="relative min-h-screen overflow-hidden" data-tenant="memories-nc">
+      <img src="/table.jpg" alt="" className="absolute inset-0 h-full w-full object-cover opacity-35" />
+      <div className="absolute inset-0 bg-[#08070D]/80" />
+      <div className="relative z-10 mx-auto flex min-h-screen max-w-sm flex-col justify-between px-6 py-10">
+        <div>
+          <Wordmark href="/" size="md" />
+          <p className="mt-3 text-[11px] uppercase tracking-[0.28em] text-[#8A8580]">Working tonight</p>
+        </div>
+
+        <div>
+          <input
+            className="h-14 w-full border border-[#2A242C] bg-[#100E14] px-4 text-[#F3EDE4] placeholder:text-[#6B6570]"
+            placeholder="Your number"
+            value={phone}
+            onChange={e => setPhone(e.target.value)}
+            inputMode="tel"
+          />
+          <p className="mt-6 text-center font-mono text-[32px] tracking-[0.4em] text-[#F3EDE4]">
+            {pin ? '\u2022'.repeat(pin.length) : 'PIN'}
+          </p>
+          <div className="mt-6 grid grid-cols-3 gap-2">
+            {['1','2','3','4','5','6','7','8','9','C','0','\u232b'].map(d => (
+              <button
+                key={d}
+                onClick={() => press(d)}
+                className="h-16 border border-[#2A242C] bg-[#100E14] text-[20px] text-[#F3EDE4]"
+              >
+                {d}
+              </button>
+            ))}
+          </div>
+          {err && <p className="mt-4 text-center text-[13px] text-ev-crimson">{err}</p>}
+        </div>
+
+        <button
+          disabled={busy || pin.length < 4}
+          onClick={() => void submit()}
+          className="h-14 bg-ev-crimson text-[13px] font-semibold uppercase tracking-[0.22em] text-white disabled:opacity-40"
+        >
+          {busy ? 'Opening\u2026' : 'Enter the house'}
+        </button>
       </div>
     </main>
   )
