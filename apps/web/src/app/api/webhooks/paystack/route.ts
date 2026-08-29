@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { createSupabaseServiceRole } from '@/lib/supabase/server'
 import { issueTicketsFromCheckout } from '@/lib/issue-tickets'
+import { webhookEventId } from '@/lib/runtime'
 
 function verify(raw: string, signature: string): boolean {
-  const secret = process.env['PAYSTACK_WEBHOOK_SECRET'] || process.env['PAYSTACK_SECRET_KEY'] || ''
+  const secret = process.env['PAYSTACK_WEBHOOK_SECRET'] || ''
+  if (!secret || !signature) return false
   const expected = createHmac('sha512', secret).update(raw).digest('hex')
   const a = Buffer.from(expected)
-  const b = Buffer.from(signature || '')
+  const b = Buffer.from(signature)
   if (a.length !== b.length) return false
   return timingSafeEqual(a, b)
 }
@@ -19,10 +21,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'invalid signature' }, { status: 401 })
   }
 
-  const payload = JSON.parse(raw) as { event?: string; data?: Record<string, unknown>; id?: string }
-  const eventId = String(payload.data?.id ?? payload.id ?? signature.slice(0, 24))
-  const supabase = createSupabaseServiceRole()
+  let payload: { event?: string; data?: Record<string, unknown>; id?: unknown }
+  try {
+    payload = JSON.parse(raw) as { event?: string; data?: Record<string, unknown>; id?: unknown }
+  } catch {
+    return NextResponse.json({ error: 'invalid json' }, { status: 400 })
+  }
 
+  let eventId: string
+  try {
+    eventId = webhookEventId(payload)
+  } catch {
+    return NextResponse.json({ error: 'missing event id' }, { status: 400 })
+  }
+
+  const supabase = createSupabaseServiceRole()
   const { error: dup } = await supabase.from('webhook_events').insert({
     paystack_event_id: eventId,
     event_type: payload.event ?? 'unknown',
@@ -31,14 +44,29 @@ export async function POST(req: NextRequest) {
   if (dup?.code === '23505') return NextResponse.json({ ok: true, duplicate: true })
 
   if (payload.event === 'charge.success' && payload.data) {
-    const ref = payload.data.reference as string
-    const { data: checkout } = await supabase.from('pending_checkouts').select('*').eq('paystack_ref', ref).maybeSingle()
+    const ref = String(payload.data.reference ?? '')
+    if (!ref) return NextResponse.json({ ok: true, ignored: 'no_reference' })
+
+    const { data: checkout } = await supabase
+      .from('pending_checkouts')
+      .select('*')
+      .eq('paystack_ref', ref)
+      .maybeSingle()
+
     if (checkout && checkout.status !== 'issued') {
       await supabase.from('pending_checkouts').update({ status: 'paid' }).eq('id', checkout.id)
-      await issueTicketsFromCheckout(supabase, checkout, {
-        fee_pesewas: (payload.data.fees as number) || 0,
-        method: payload.data.channel as string,
-      })
+      try {
+        await issueTicketsFromCheckout(supabase, checkout, {
+          fee_pesewas: Number(payload.data.fees ?? 0) || 0,
+          method: String(payload.data.channel ?? ''),
+        })
+      } catch (err) {
+        await supabase.from('webhook_events').delete().eq('paystack_event_id', eventId)
+        return NextResponse.json(
+          { error: err instanceof Error ? err.message : 'issue_failed' },
+          { status: 500 },
+        )
+      }
     }
 
     const { data: order } = await supabase.from('orders').select('id').eq('paystack_ref', ref).maybeSingle()
