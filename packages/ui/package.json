@@ -12,6 +12,9 @@
     "./order-card": "./src/OrderCard.tsx",
     "./money-display": "./src/MoneyDisplay.tsx"
   },
+  "dependencies": {
+    "@evolveit/shared": "workspace:*"
+  },
   "devDependencies": {
     "typescript": "^5.4.5",
     "@types/react": "^18.3.1",

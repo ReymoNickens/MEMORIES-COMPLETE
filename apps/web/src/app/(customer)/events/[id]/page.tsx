@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { formatAmount } from '@evolveit/shared/money'
 import { normalisePhone } from '@evolveit/shared/phone'
+import { PhoneInput, MoneyDisplay, Button } from '@evolveit/ui'
 
 interface TicketTypeRow {
   id: string
@@ -94,12 +95,12 @@ export default function EventPage() {
       {totalQty > 0 && (
         <div className="max-w-lg mt-8 space-y-3">
           <input className="w-full h-12 rounded-lg px-3 text-ev-dark" placeholder="Full name" value={buyerName} onChange={e => setBuyerName(e.target.value)} />
-          <input className="w-full h-12 rounded-lg px-3 text-ev-dark" placeholder="0244 123 456" value={buyerPhone} onChange={e => setBuyerPhone(e.target.value)} />
+          <PhoneInput value={buyerPhone} onChange={v => setBuyerPhone(v ?? '')} />
           <input className="w-full h-12 rounded-lg px-3 text-ev-dark" placeholder="Email" value={buyerEmail} onChange={e => setBuyerEmail(e.target.value)} />
           {err && <p className="text-ev-crimson text-body-md">{err}</p>}
-          <button disabled={loading} onClick={() => void pay()} className="w-full h-14 rounded-lg bg-ev-crimson font-semibold">
-            {loading ? 'Starting…' : `Pay ${formatAmount(totalPesewas)} · MoMo`}
-          </button>
+          <Button variant="momo" size="lg" fullWidth loading={loading} onClick={() => void pay()}>
+            Pay <MoneyDisplay pesewas={totalPesewas} className="mx-1" /> · MoMo
+          </Button>
         </div>
       )}
     </main>

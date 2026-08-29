@@ -4,7 +4,7 @@ import { normalisePhone } from '@evolveit/shared/phone'
 export interface PhoneInputProps {
   value: string
   onChange: (e164: string | null) => void
-  error?: string
+  error?: string | undefined
   placeholder?: string
   disabled?: boolean
 }

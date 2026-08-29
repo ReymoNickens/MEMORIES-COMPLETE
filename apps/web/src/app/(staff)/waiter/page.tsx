@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { formatAmount } from '@evolveit/shared/money'
+import { CurrencyInput, MoneyDisplay, Button } from '@evolveit/ui'
 
 interface OrderItem { product_name: string; quantity: number; status: string }
 interface TableOrder {
@@ -17,7 +17,7 @@ interface WaiterTable { id: string; label: string; zone: string | null; orders: 
 export default function WaiterPage() {
   const [tables, setTables] = useState<WaiterTable[]>([])
   const [selectedTable, setSelectedTable] = useState<WaiterTable | null>(null)
-  const [cashAmount, setCashAmount] = useState('')
+  const [cashPesewas, setCashPesewas] = useState(0)
   const [showCashSheet, setShowCashSheet] = useState<string | null>(null)
 
   async function reload() {
@@ -43,15 +43,14 @@ export default function WaiterPage() {
   }
 
   async function collectCash(orderId: string) {
-    const pesewas = Math.round(parseFloat(cashAmount) * 100)
-    if (!pesewas || isNaN(pesewas)) return
+    if (!cashPesewas) return
     await fetch('/api/orders/status', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ order_id: orderId, cash_pesewas: pesewas }),
+      body: JSON.stringify({ order_id: orderId, cash_pesewas: cashPesewas }),
     })
     setShowCashSheet(null)
-    setCashAmount('')
+    setCashPesewas(0)
     void reload()
   }
 
@@ -102,14 +101,11 @@ export default function WaiterPage() {
                   </div>
                 ))}
                 <div className="flex justify-between items-center mt-3 pt-2 border-t border-ev-border">
-                  <span className="text-body-md font-mono text-ev-dark">{formatAmount(order.amount_pesewas)}</span>
+                  <MoneyDisplay pesewas={order.amount_pesewas} className="text-ev-dark" />
                   {order.payment_source === 'cash' && order.status === 'paid' && (
-                    <button
-                      onClick={() => setShowCashSheet(order.id)}
-                      className="bg-ev-success text-white text-label px-4 py-2 rounded-lg min-h-tap"
-                    >
+                    <Button variant="primary" size="sm" onClick={() => setShowCashSheet(order.id)}>
                       Cash Collected
-                    </button>
+                    </Button>
                   )}
                 </div>
               </div>
@@ -122,30 +118,14 @@ export default function WaiterPage() {
         <div className="fixed inset-0 bg-black/60 z-20 flex items-end">
           <div className="w-full bg-ev-card rounded-t-2xl p-6 space-y-4">
             <h3 className="text-h2 text-ev-dark">Collect Cash</h3>
-            <div className="flex items-center border border-ev-border rounded-lg overflow-hidden">
-              <span className="px-4 text-body-lg text-ev-muted bg-gray-50 h-14 flex items-center border-r border-ev-border">GHS</span>
-              <input
-                type="number"
-                step="0.01"
-                value={cashAmount}
-                onChange={e => setCashAmount(e.target.value)}
-                placeholder="0.00"
-                className="flex-1 h-14 px-4 text-h2 font-mono text-ev-dark focus:outline-none"
-              />
-            </div>
+            <CurrencyInput valuePesewas={cashPesewas} onChange={setCashPesewas} />
             <div className="flex gap-3">
-              <button
-                onClick={() => { setShowCashSheet(null); setCashAmount('') }}
-                className="flex-1 h-14 border border-ev-border rounded-lg text-ev-dark text-h3 min-h-tap-lg"
-              >
+              <Button variant="ghost" size="lg" fullWidth onClick={() => { setShowCashSheet(null); setCashPesewas(0) }}>
                 Cancel
-              </button>
-              <button
-                onClick={() => void collectCash(showCashSheet)}
-                className="flex-1 h-14 bg-ev-success text-white rounded-lg text-h3 min-h-tap-lg"
-              >
+              </Button>
+              <Button variant="primary" size="lg" fullWidth onClick={() => void collectCash(showCashSheet)}>
                 Confirm
-              </button>
+              </Button>
             </div>
           </div>
         </div>

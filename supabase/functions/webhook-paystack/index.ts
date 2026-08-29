@@ -159,11 +159,44 @@ async function issueTickets(ref: string, metadata: Record<string, unknown>) {
 
 async function markOrderPaid(ref: string, metadata: Record<string, unknown>) {
   const orderId = metadata['order_id'] as string
-  await supabase
+
+  const { data: updated } = await supabase
     .from('orders')
     .update({ status: 'paid', paid_at: new Date().toISOString(), paystack_ref: ref })
     .eq('id', orderId)
     .eq('status', 'pending_payment')
+    .select('id, tenant_id, amount_pesewas')
+    .single()
+
+  if (updated) {
+    const { data: paymentRow } = await supabase
+      .from('ticket_payments')
+      .select('id')
+      .eq('paystack_ref', ref)
+      .single()
+
+    const paymentId = paymentRow?.id ?? orderId
+
+    await supabase.from('ledger_entries').insert([
+      {
+        tenant_id: updated.tenant_id,
+        account: 'momo_clearing',
+        direction: 'DR',
+        amount_pesewas: updated.amount_pesewas,
+        ref_type: 'order_payment',
+        ref_id: paymentId,
+        memo: `Order payment: ${orderId}`,
+      },
+      {
+        tenant_id: updated.tenant_id,
+        account: 'fnb_revenue',
+        direction: 'CR',
+        amount_pesewas: updated.amount_pesewas,
+        ref_type: 'order_payment',
+        ref_id: paymentId,
+      },
+    ])
+  }
 
   // Notify hub
   await notifyHub({ type: 'order_paid', order_id: orderId })
