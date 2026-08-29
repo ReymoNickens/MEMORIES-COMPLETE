@@ -3,12 +3,9 @@ import { createSupabaseServiceRole } from '@/lib/supabase/server'
 import { normalisePhone } from '@evolveit/shared/phone'
 import { makeError, ErrorCodes } from '@evolveit/shared/errors'
 import { issueTicketsFromCheckout } from '@/lib/issue-tickets'
+import { demoPaymentsAllowed, paymentsConfigured } from '@/lib/runtime'
 import type { CheckoutInitiateRequest } from '@evolveit/shared/types'
-
-function demoMode(): boolean {
-  const key = process.env['PAYSTACK_SECRET_KEY'] ?? ''
-  return !key || key.startsWith('sk_demo') || process.env['EVOLVEIT_DEMO'] === '1'
-}
+import { randomBytes } from 'node:crypto'
 
 export async function POST(req: NextRequest) {
   let body: CheckoutInitiateRequest
@@ -56,7 +53,11 @@ export async function POST(req: NextRequest) {
   }
 
   const totalPesewas = (ticketType.price_pesewas as number) * qty
-  const paystackRef = `mnc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const paystackRef = `mnc_${randomBytes(12).toString('hex')}`
+
+  if (!paymentsConfigured()) {
+    return NextResponse.json(makeError(ErrorCodes.PAYMENT_FAILED, 'Payments are not configured'), { status: 503 })
+  }
 
   const { error: pendingErr } = await supabase.from('pending_checkouts').insert({
     tenant_id: ticketType.tenant_id,
@@ -76,7 +77,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(makeError(ErrorCodes.PAYMENT_FAILED, 'Checkout init failed'), { status: 500 })
   }
 
-  if (demoMode()) {
+  if (demoPaymentsAllowed()) {
     return NextResponse.json({
       authorization_url: `/checkout/return?ref=${paystackRef}&demo=1`,
       reference: paystackRef,
@@ -119,9 +120,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PUT(req: NextRequest) {
-  const key = process.env['PAYSTACK_SECRET_KEY'] ?? ''
-  const allowed = !key || key.startsWith('sk_demo') || process.env['EVOLVEIT_DEMO'] === '1'
-  if (!allowed) {
+  if (!demoPaymentsAllowed()) {
     return NextResponse.json({ error: 'Live rail — wait for webhook' }, { status: 403 })
   }
 
@@ -141,6 +140,11 @@ export async function PUT(req: NextRequest) {
   }
 
   await supabase.from('pending_checkouts').update({ status: 'paid' }).eq('id', checkout.id)
-  const issued = await issueTicketsFromCheckout(supabase, checkout)
-  return NextResponse.json({ ok: true, ...issued })
+  try {
+    const issued = await issueTicketsFromCheckout(supabase, checkout)
+    return NextResponse.json({ ok: true, ...issued })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'issue_failed'
+    return NextResponse.json({ error: msg }, { status: msg === 'sold_out' ? 409 : 500 })
+  }
 }
