@@ -1,11 +1,35 @@
-import { createHmac, createHash, randomBytes, timingSafeEqual, createCipheriv, createDecipheriv } from 'node:crypto'
+import { createHmac, createHash, randomBytes, timingSafeEqual, createCipheriv, createDecipheriv, pbkdf2Sync } from 'node:crypto'
 
 export function sha256Hex(value: string): string {
   return createHash('sha256').update(value).digest('hex')
 }
 
+/** @deprecated Legacy SHA-256 PIN hash — only kept for migration fallback. Use hashPinStrong. */
 export function hashPin(pin: string, tenantId: string): string {
   return sha256Hex(`${tenantId}:${pin}`)
+}
+
+/**
+ * PBKDF2-SHA256 with 600,000 iterations (NIST SP 800-132 recommendation).
+ * Returns `salt$hash` where both are hex-encoded.
+ */
+export function hashPinStrong(pin: string): { encoded: string } {
+  const salt = randomBytes(16).toString('hex')
+  const hash = pbkdf2Sync(pin, salt, 600000, 32, 'sha256').toString('hex')
+  return { encoded: `${salt}$${hash}` }
+}
+
+/** Constant-time verification for a PBKDF2-SHA256 encoded PIN hash. */
+export function verifyPinStrong(pin: string, encoded: string): boolean {
+  const sep = encoded.indexOf('$')
+  if (sep === -1) return false
+  const salt = encoded.substring(0, sep)
+  const stored = encoded.substring(sep + 1)
+  const candidate = pbkdf2Sync(pin, salt, 600000, 32, 'sha256').toString('hex')
+  const a = Buffer.from(candidate, 'hex')
+  const b = Buffer.from(stored, 'hex')
+  if (a.length !== b.length) return false
+  return timingSafeEqual(a, b)
 }
 
 // HMAC-SHA256 of the device API key using a server secret so hash-table
@@ -40,15 +64,6 @@ export function decryptSecret(enc: string, keyHex: string): string {
   return Buffer.concat([decipher.update(Buffer.from(ctHex, 'hex')), decipher.final()]).toString('utf8')
 }
 
-/** @deprecated Use encryptSecret / decryptSecret for at-rest protection. */
-export function encodeTotpSecret(base32Secret: string): string {
-  return Buffer.from(base32Secret, 'utf8').toString('base64')
-}
-
-/** @deprecated Use encryptSecret / decryptSecret for at-rest protection. */
-export function decodeTotpSecret(enc: string): string {
-  return Buffer.from(enc, 'base64').toString('utf8')
-}
 
 export function randomToken(bytes = 24): string {
   return randomBytes(bytes).toString('hex')

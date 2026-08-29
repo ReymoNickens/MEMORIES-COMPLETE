@@ -28,6 +28,7 @@ export interface RedeemRequest {
   ticket_id: string
   totp_code: string
   device_id: string
+  api_key: string
   door_label: string
 }
 

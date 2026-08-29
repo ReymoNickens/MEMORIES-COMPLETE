@@ -4,7 +4,11 @@ import { createSupabaseServiceRole } from '@/lib/supabase/server'
 import { issueTicketsFromCheckout } from '@/lib/issue-tickets'
 
 function verify(raw: string, signature: string): boolean {
-  const secret = process.env['PAYSTACK_WEBHOOK_SECRET'] || process.env['PAYSTACK_SECRET_KEY'] || ''
+  const secret = process.env['PAYSTACK_WEBHOOK_SECRET']
+  if (!secret) {
+    console.error('PAYSTACK_WEBHOOK_SECRET is not set — rejecting webhook')
+    return false
+  }
   const expected = createHmac('sha512', secret).update(raw).digest('hex')
   const a = Buffer.from(expected)
   const b = Buffer.from(signature || '')

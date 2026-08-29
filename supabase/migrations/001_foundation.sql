@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS devices (
   tenant_id     uuid NOT NULL REFERENCES tenants(id),
   name          text NOT NULL,
   role          text NOT NULL CHECK (role IN ('hub', 'door', 'bar_display', 'kitchen_display')),
-  key_hash      text NOT NULL,      -- argon2id hash of device API key
+  key_hash      text NOT NULL,      -- HMAC-SHA256(device_api_key, HUB_SECRET) — see hashDeviceKey()
   event_ids     uuid[],             -- null = all events; set to lock scanner to specific events
   revoked_at    timestamptz,
   last_seen_at  timestamptz,

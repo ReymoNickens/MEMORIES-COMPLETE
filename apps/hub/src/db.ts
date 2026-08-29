@@ -1,9 +1,9 @@
-import Database from 'better-sqlite3'
+import Database, { type Database as DB } from 'better-sqlite3'
 import path from 'node:path'
 
 const DB_PATH = process.env['HUB_DB_PATH'] ?? path.join(process.cwd(), 'hub.db')
 
-export const db = new Database(DB_PATH)
+export const db: DB = new Database(DB_PATH)
 
 // WAL mode for concurrent reads during scanning
 db.pragma('journal_mode = WAL')

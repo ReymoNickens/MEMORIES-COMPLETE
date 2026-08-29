@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServiceRole } from '@/lib/supabase/server'
 import { normalisePhone } from '@evolveit/shared/phone'
 import { makeError, ErrorCodes } from '@evolveit/shared/errors'
-import { issueTicketsFromCheckout } from '@/lib/issue-tickets'
 import type { CheckoutInitiateRequest } from '@evolveit/shared/types'
 
 function demoMode(): boolean {
@@ -118,29 +117,3 @@ export async function POST(req: NextRequest) {
   })
 }
 
-export async function PUT(req: NextRequest) {
-  const key = process.env['PAYSTACK_SECRET_KEY'] ?? ''
-  const allowed = !key || key.startsWith('sk_demo') || process.env['EVOLVEIT_DEMO'] === '1'
-  if (!allowed) {
-    return NextResponse.json({ error: 'Live rail — wait for webhook' }, { status: 403 })
-  }
-
-  const body = await req.json().catch(() => null) as { reference?: string } | null
-  if (!body?.reference) return NextResponse.json({ error: 'reference required' }, { status: 400 })
-
-  const supabase = createSupabaseServiceRole()
-  const { data: checkout } = await supabase
-    .from('pending_checkouts')
-    .select('*')
-    .eq('paystack_ref', body.reference)
-    .single()
-
-  if (!checkout) return NextResponse.json({ error: 'Checkout not found' }, { status: 404 })
-  if (checkout.status === 'issued') {
-    return NextResponse.json({ ok: true, already: true })
-  }
-
-  await supabase.from('pending_checkouts').update({ status: 'paid' }).eq('id', checkout.id)
-  const issued = await issueTicketsFromCheckout(supabase, checkout)
-  return NextResponse.json({ ok: true, ...issued })
-}

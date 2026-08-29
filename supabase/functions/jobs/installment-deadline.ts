@@ -38,22 +38,13 @@ async function processExpiredPlan(plan: {
   total_pesewas: number
   paid_pesewas: number
 }) {
-  // 1. Mark plan as defaulted
-  await supabase
-    .from('payment_plans')
-    .update({ status: 'defaulted' })
-    .eq('id', plan.id)
-
-  // 2. Void the ticket
-  await supabase
-    .from('tickets')
-    .update({ status: 'voided', voided_at: new Date().toISOString(), voided_reason: 'installment_defaulted' })
-    .eq('id', plan.ticket_id)
-
-  // 3. Create revocation record
-  await supabase
-    .from('revocations')
-    .insert({ ticket_id: plan.ticket_id, reason: 'installment_defaulted' })
+  // Steps 1-3 are atomic: plan default + ticket void + revocation in one transaction.
+  // If this RPC raises, the plan status is still 'active' and will be retried next cron run.
+  const { error: voidErr } = await supabase.rpc('void_defaulted_plan', {
+    p_plan_id: plan.id,
+    p_ticket_id: plan.ticket_id,
+  })
+  if (voidErr) throw new Error(voidErr.message)
 
   // 4. Get ticket info for notification
   const { data: ticket } = await supabase

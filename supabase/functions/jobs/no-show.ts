@@ -34,7 +34,7 @@ Deno.serve(async (req) => {
         account: 'forfeiture_income',
         direction: 'CR',
         amount_pesewas: reservation.deposit_pesewas,
-        ref_type: 'settlement',
+        ref_type: 'reservation',
         ref_id: reservation.id,
         memo: `No-show deposit forfeiture: ${reservation.guest_name}`,
       })

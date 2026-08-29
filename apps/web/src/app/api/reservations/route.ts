@@ -48,6 +48,15 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ id: data.id })
 }
 
+// Valid state transitions: current status → allowed next statuses
+const RESERVATION_TRANSITIONS: Record<string, string[]> = {
+  pending:   ['confirmed', 'cancelled'],
+  confirmed: ['arrived', 'no_show', 'cancelled'],
+  arrived:   [],
+  no_show:   [],
+  cancelled: [],
+}
+
 export async function PATCH(req: NextRequest) {
   const staff = await getStaffSession()
   if (!staff) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
@@ -57,6 +66,20 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'id and status required' }, { status: 400 })
   }
   const supabase = createSupabaseServiceRole()
+
+  // Validate transition against current state
+  const { data: existing } = await supabase
+    .from('table_reservations')
+    .select('status')
+    .eq('id', body.id)
+    .eq('tenant_id', staff.tenant_id)
+    .single()
+  if (!existing) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  const validNext = RESERVATION_TRANSITIONS[existing.status as string] ?? []
+  if (!validNext.includes(body.status!)) {
+    return NextResponse.json({ error: `Cannot move from '${existing.status}' to '${body.status}'` }, { status: 409 })
+  }
+
   const patch: Record<string, unknown> = { status: body.status }
   if (body.status === 'arrived') patch.arrived_at = new Date().toISOString()
   if (body.status === 'cancelled') patch.cancelled_at = new Date().toISOString()

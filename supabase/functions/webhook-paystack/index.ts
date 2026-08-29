@@ -189,7 +189,7 @@ async function markOrderPaid(ref: string, metadata: Record<string, unknown>) {
       },
       {
         tenant_id: updated.tenant_id,
-        account: 'fnb_revenue',
+        account: 'fb_revenue',
         direction: 'CR',
         amount_pesewas: updated.amount_pesewas,
         ref_type: 'order_payment',

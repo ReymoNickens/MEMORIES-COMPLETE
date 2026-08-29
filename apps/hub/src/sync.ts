@@ -9,7 +9,7 @@ function totpKey(): string {
 }
 
 const supabase = createClient(
-  process.env['NEXT_PUBLIC_SUPABASE_URL'] ?? process.env['SUPABASE_URL']!,
+  process.env['SUPABASE_URL']!,
   process.env['SUPABASE_SERVICE_ROLE_KEY']!,
   { auth: { autoRefreshToken: false, persistSession: false } }
 )
@@ -19,11 +19,13 @@ export async function syncDown(): Promise<void> {
   const now = new Date().toISOString()
   const windowEnd = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString()
 
+  // Include events whose check-in window overlaps the current 8-hour period
+  // (check_in_from <= windowEnd AND check_in_until >= now)
   const { data: upcomingEvents } = await supabase
     .from('events')
     .select('id')
-    .gte('starts_at', now)
-    .lte('starts_at', windowEnd)
+    .lte('check_in_from', windowEnd)
+    .gte('check_in_until', now)
 
   const eventIds = (upcomingEvents ?? []).map((e: { id: string }) => e.id)
 
@@ -44,7 +46,7 @@ export async function syncDown(): Promise<void> {
         .eq('status', 'issued')
         .in('ticket_type_id', typeIds)
 
-      tickets = (data ?? []) as typeof tickets
+      tickets = (data ?? []) as unknown as typeof tickets
     }
   }
 
@@ -65,10 +67,16 @@ export async function syncDown(): Promise<void> {
     )
   }
 
-  // Pull revocations
-  const { data: revocations } = await supabase
-    .from('revocations')
-    .select('ticket_id, revoked_at')
+  // Pull revocations only for tickets in the current sync window
+  const { data: revocations } = eventIds.length > 0
+    ? await supabase
+        .from('revocations')
+        .select('ticket_id, revoked_at')
+        .in('ticket_id',
+          (db.prepare('SELECT ticket_id FROM hub_tickets WHERE event_id IN (' + eventIds.map(() => '?').join(',') + ')')
+            .all(...eventIds) as Array<{ ticket_id: string }>).map(r => r.ticket_id)
+        )
+    : { data: [] }
 
   const upsertRevocation = db.prepare(`
     INSERT OR REPLACE INTO hub_revocations (ticket_id, revoked_at)

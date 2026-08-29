@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServiceRole } from '@/lib/supabase/server'
 import { decryptSecret, sha256Hex } from '@evolveit/shared/crypto'
+import { generateQrPayload } from '@evolveit/shared/totp'
 
 function totpKey(): string {
   const k = process.env['TOTP_ENCRYPTION_KEY']
@@ -33,12 +34,25 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const event = ticket.events as { name: string; starts_at: string }
   const type = ticket.ticket_types as { name: string }
 
+  // Decrypt secret server-side and generate the current TOTP payload — never expose the secret
+  let qr_payload: string | null = null
+  try {
+    const secret = decryptSecret(ticket.totp_secret_enc as string, totpKey())
+    qr_payload = generateQrPayload(ticket.id, secret)
+  } catch {
+    // If decryption fails, return ticket info without a code; scanner will reject
+  }
+
+  // Tell the client how many seconds until the next 30-second window so it knows when to refresh
+  const totp_expires_in = 30 - (Math.floor(Date.now() / 1000) % 30)
+
   return NextResponse.json({
     id: ticket.id,
     serial: ticket.serial,
     buyer_name: ticket.buyer_name,
     status: ticket.status,
-    totp_secret: decryptSecret(ticket.totp_secret_enc as string, totpKey()),
+    qr_payload,
+    totp_expires_in,
     event_name: event.name,
     event_date: event.starts_at,
     ticket_type_name: type.name,

@@ -1,5 +1,5 @@
 import express from 'express'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { db } from './db.js'
 import { syncDown, syncUp } from './sync.js'
 import { verifyTotp } from '@evolveit/shared/totp'
@@ -23,13 +23,25 @@ app.get('/v1/health', (_req, res) => {
 
 // ── Door scanner: redeem ticket ───────────────────────────────────────────────
 app.post('/v1/redeem', (req, res) => {
-  const { ticket_id, totp_code, device_id, door_label } = req.body as RedeemRequest
+  const { ticket_id, totp_code, device_id, api_key, door_label } = req.body as RedeemRequest
 
-  // 1. Verify device credential
+  // 1. Verify device credential — both id and HMAC of api_key must match
   const device = db.prepare('SELECT * FROM hub_devices WHERE id = ?').get(device_id) as
     { id: string; name: string; role: string; key_hash: string; revoked_at: string | null } | undefined
 
   if (!device || device.revoked_at) {
+    return res.status(401).json({ ok: false, reason: 'unauthorized' } satisfies RedeemResult)
+  }
+
+  // Constant-time comparison of HMAC-SHA256(api_key) against stored key_hash
+  let keyMatch = false
+  try {
+    const provided = Buffer.from(hashDeviceKey(api_key ?? ''), 'hex')
+    const stored = Buffer.from(device.key_hash, 'hex')
+    keyMatch = provided.length === stored.length && timingSafeEqual(provided, stored)
+  } catch { /* missing or malformed key — treat as mismatch */ }
+
+  if (!keyMatch) {
     return res.status(401).json({ ok: false, reason: 'unauthorized' } satisfies RedeemResult)
   }
 
@@ -83,9 +95,11 @@ app.post('/v1/redeem', (req, res) => {
 })
 
 // ── Capacity ──────────────────────────────────────────────────────────────────
-app.get('/v1/capacity', (_req, res) => {
+app.get('/v1/capacity', (req, res) => {
+  const secret = req.headers['x-hub-secret']
+  if (secret !== HUB_SECRET) return res.status(401).json({ error: 'unauthorized' })
   const count = (db.prepare('SELECT COUNT(*) as n FROM hub_redemptions').get() as { n: number }).n
-  res.json({ admitted: count })
+  return res.json({ admitted: count })
 })
 
 // ── Order fan-out via SSE ─────────────────────────────────────────────────────
@@ -120,12 +134,18 @@ app.post('/v1/order', (req, res) => {
 })
 
 // ── SSE queue for bar/kitchen displays ───────────────────────────────────────
-app.get('/v1/queue/:station', (req, res) => {
+app.get('/v1/queue/:station', (req, res): void => {
+  const secret = req.headers['x-hub-secret']
+  if (secret !== HUB_SECRET) { res.status(401).json({ error: 'unauthorized' }); return }
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
 
   const station = req.params['station']!
+  if (sseClients.size >= 50) {
+    res.status(503).json({ error: 'too many SSE clients' }); return
+  }
+
   const clientId = ++clientIdCounter
   sseClients.set(clientId, { res, station })
 
@@ -135,7 +155,20 @@ app.get('/v1/queue/:station', (req, res) => {
   ).all(station)
   res.write(`data: ${JSON.stringify({ type: 'init', orders: queue })}\n\n`)
 
-  req.on('close', () => sseClients.delete(clientId))
+  // Heartbeat every 25 s to detect stale connections
+  const heartbeat = setInterval(() => {
+    if (res.socket?.destroyed) {
+      clearInterval(heartbeat)
+      sseClients.delete(clientId)
+      return
+    }
+    res.write(': ping\n\n')
+  }, 25000)
+
+  req.on('close', () => {
+    clearInterval(heartbeat)
+    sseClients.delete(clientId)
+  })
 })
 
 // ── Device management ────────────────────────────────────────────────────────
@@ -192,8 +225,17 @@ app.post('/v1/notify', (req, res) => {
   return res.json({ ok: true })
 })
 
+// ── Startup validation ────────────────────────────────────────────────────────
+const REQUIRED_ENV = ['HUB_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'TOTP_ENCRYPTION_KEY']
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    console.error(`Missing required env var: ${key}`)
+    process.exit(1)
+  }
+}
+
 // ── Start server ──────────────────────────────────────────────────────────────
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Hub listening on port ${PORT}`)
 
   // Initial sync on startup
@@ -206,3 +248,18 @@ app.listen(PORT, '0.0.0.0', () => {
     void syncUp().catch(err => console.error('Sync up failed:', (err as Error).message))
   }, interval)
 })
+
+// ── Graceful shutdown ─────────────────────────────────────────────────────────
+function shutdown() {
+  server.close(() => {
+    try {
+      db.pragma('wal_checkpoint(TRUNCATE)')
+      db.close()
+    } catch { /* ignore */ }
+    process.exit(0)
+  })
+  // Force exit after 10 s if connections linger
+  setTimeout(() => process.exit(1), 10000).unref()
+}
+process.on('SIGTERM', shutdown)
+process.on('SIGINT', shutdown)

@@ -22,6 +22,16 @@ export async function POST(req: NextRequest) {
 
   const { token, items, guest_name, guest_phone, payment_source, waiter_id } = body
 
+  if (!Array.isArray(items) || items.length === 0 || items.length > 50) {
+    return NextResponse.json(makeError(ErrorCodes.NOT_FOUND, 'items must be a non-empty array of at most 50'), { status: 400 })
+  }
+  for (const item of items) {
+    if (!item.product_id || typeof item.quantity !== 'number' ||
+        !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 100) {
+      return NextResponse.json(makeError(ErrorCodes.NOT_FOUND, 'Each item needs a product_id and quantity between 1 and 100'), { status: 400 })
+    }
+  }
+
   const normalisedPhone = normalisePhone(guest_phone)
   if (!normalisedPhone) {
     return NextResponse.json(makeError(ErrorCodes.PHONE_INVALID, 'Invalid Ghana phone number'), { status: 400 })
@@ -140,17 +150,29 @@ export async function POST(req: NextRequest) {
         amount_pesewas: totalPesewas,
       })
 
-      await supabase.from('ledger_entries').insert({
-        tenant_id: tenantId,
-        shift_id: shift.id,
-        account: 'cash_drawer',
-        direction: 'DR',
-        amount_pesewas: totalPesewas,
-        ref_type: 'order',
-        ref_id: order.id,
-        actor_id: waiter_id,
-        memo: `Cash order: table ${tableData?.label}`,
-      })
+      await supabase.from('ledger_entries').insert([
+        {
+          tenant_id: tenantId,
+          shift_id: shift.id,
+          account: 'cash_drawer',
+          direction: 'DR',
+          amount_pesewas: totalPesewas,
+          ref_type: 'order',
+          ref_id: order.id,
+          actor_id: waiter_id,
+          memo: `Cash order: table ${tableData?.label}`,
+        },
+        {
+          tenant_id: tenantId,
+          shift_id: shift.id,
+          account: 'fb_revenue',
+          direction: 'CR',
+          amount_pesewas: totalPesewas,
+          ref_type: 'order',
+          ref_id: order.id,
+          actor_id: waiter_id,
+        },
+      ])
     }
   }
 

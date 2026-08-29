@@ -16,7 +16,8 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   const staff = await getStaffSession()
-  if (!staff) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+  const canSubmit = staff?.roles.includes('organiser') || staff?.roles.includes('owner') || staff?.roles.includes('manager')
+  if (!staff || !canSubmit) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const body = await req.json().catch(() => null) as Record<string, unknown> | null
   if (!body?.event_name || !body?.preferred_date || !body?.description) {
     return NextResponse.json({ error: 'missing fields' }, { status: 400 })

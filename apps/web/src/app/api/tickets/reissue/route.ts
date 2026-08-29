@@ -57,5 +57,15 @@ export async function POST(req: NextRequest) {
     performed_by: staff.user_id,
   })
 
+  // Trigger immediate hub sync so the old TOTP secret is replaced within seconds
+  // rather than waiting up to 60 s for the scheduled sync interval
+  const hubUrl = process.env['HUB_LAN_URL'] ?? 'http://hub.lan:3001'
+  const hubSecret = process.env['HUB_SECRET'] ?? ''
+  void fetch(`${hubUrl}/v1/notify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-hub-secret': hubSecret },
+    body: JSON.stringify({ type: 'ticket_reissued', ticket_id: ticket.id }),
+  }).catch(() => { /* hub offline — sync on next interval */ })
+
   return NextResponse.json({ ok: true, ticket_id: ticket.id, access_token: access })
 }

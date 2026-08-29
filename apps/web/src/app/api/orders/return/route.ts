@@ -8,13 +8,13 @@ export async function GET(req: NextRequest) {
   const supabase = createSupabaseServiceRole()
   const { data: order } = await supabase
     .from('orders')
-    .select('id, status, table_id, venue_tables(label)')
+    .select('id, status, venue_table_id, venue_tables(label)')
     .eq('paystack_ref', ref)
     .maybeSingle()
 
   if (!order) return NextResponse.json({ confirmed: false })
 
-  const confirmed = order.status === 'paid' || order.status === 'preparing' || order.status === 'ready'
+  const confirmed = order.status === 'paid' || order.status === 'preparing' || order.status === 'complete'
   const table = order.venue_tables as { label: string } | null
 
   return NextResponse.json({

@@ -1,6 +1,7 @@
 import { encryptSecret, randomToken, sha256Hex } from '@evolveit/shared/crypto'
 import { sendTicketDelivery } from '@evolveit/shared/notify'
 import * as OTPAuth from 'otpauth'
+import { randomBytes } from 'node:crypto'
 
 function totpKey(): string {
   const k = process.env['TOTP_ENCRYPTION_KEY']
@@ -13,9 +14,10 @@ type ServiceClient = {
   rpc: (fn: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: { message: string } | null }>
 }
 
-function nextSerial(n: number): string {
+function generateSerial(): string {
   const year = new Date().getFullYear()
-  return `MNC-${year}-${String(n).padStart(5, '0')}`
+  const suffix = randomBytes(4).toString('hex').toUpperCase()
+  return `MNC-${year}-${suffix}`
 }
 
 export async function issueTicketsFromCheckout(
@@ -34,109 +36,62 @@ export async function issueTicketsFromCheckout(
   },
   opts?: { fee_pesewas?: number; method?: string }
 ): Promise<{ ticket_ids: string[]; access_tokens: string[] }> {
-  const { data: stock, error: stockErr } = await supabase.rpc('decrement_ticket_stock', {
-    p_ticket_type_id: checkout.ticket_type_id,
-    p_quantity: checkout.quantity,
-  })
-
-  if (stockErr || !stock || (stock as unknown[]).length === 0) {
-    await supabase.from('pending_checkouts').update({ status: 'failed' }).eq('id', checkout.id)
-    throw new Error('sold_out')
-  }
-
-  const ticketIds: string[] = []
-  const accessTokens: string[] = []
-
-  const { data: countRow } = await supabase
-    .from('tickets')
-    .select('id', { count: 'exact', head: true })
-    .eq('tenant_id', checkout.tenant_id)
-
-  let seq = (countRow as { count?: number } | null)?.count ?? Date.now() % 100000
+  // Generate all per-ticket material in Node.js (TOTP library not available in plpgsql)
+  const totpSecretsEnc: string[] = []
+  const serials: string[] = []
+  const rawTokens: string[] = []
+  const tokenHashes: string[] = []
 
   for (let i = 0; i < checkout.quantity; i++) {
     const secret = new OTPAuth.Secret({ size: 20 }).base32
-    const access = randomToken(18)
-    seq += 1
-    const serial = nextSerial(seq)
-
-    const { data: ticket, error } = await supabase
-      .from('tickets')
-      .insert({
-        ticket_type_id: checkout.ticket_type_id,
-        event_id: checkout.event_id,
-        tenant_id: checkout.tenant_id,
-        buyer_phone: checkout.buyer_phone,
-        buyer_name: checkout.buyer_name,
-        buyer_email: checkout.buyer_email,
-        serial,
-        totp_secret_enc: encryptSecret(secret, totpKey()),
-        status: 'issued',
-        issued_at: new Date().toISOString(),
-      })
-      .select('id')
-      .single()
-
-    if (error || !ticket) throw new Error(error?.message ?? 'ticket_insert_failed')
-
-    await supabase.from('ticket_access').insert({
-      ticket_id: ticket.id,
-      token_hash: sha256Hex(access),
-    })
-
-    await supabase.from('ownership_history').insert({
-      ticket_id: ticket.id,
-      to_phone: checkout.buyer_phone,
-      reason: 'purchase',
-    })
-
-    await supabase.from('ticket_payments').insert({
-      ticket_id: ticket.id,
-      tenant_id: checkout.tenant_id,
-      paystack_ref: `${checkout.paystack_ref}-${i + 1}`,
-      amount_pesewas: Math.round(checkout.amount_pesewas / checkout.quantity),
-      fee_pesewas: opts?.fee_pesewas ?? 0,
-      status: 'successful',
-      method: opts?.method === 'card' || opts?.method === 'ussd' ? opts.method : 'momo',
-      webhook_received_at: new Date().toISOString(),
-    })
-
-    ticketIds.push(ticket.id)
-    accessTokens.push(access)
+    totpSecretsEnc.push(encryptSecret(secret, totpKey()))
+    serials.push(generateSerial())
+    const raw = randomToken(18)
+    rawTokens.push(raw)
+    tokenHashes.push(sha256Hex(raw))
   }
 
-  await supabase.from('pending_checkouts').update({ status: 'issued', access_tokens: accessTokens }).eq('id', checkout.id)
+  const method = opts?.method === 'card' || opts?.method === 'ussd' ? opts.method : 'momo'
 
-  const perTicket = Math.round(checkout.amount_pesewas / checkout.quantity)
-  for (const id of ticketIds) {
-    await supabase.from('ledger_entries').insert([
-      {
-        tenant_id: checkout.tenant_id,
-        event_id: checkout.event_id,
-        account: 'momo_clearing',
-        direction: 'DR',
-        amount_pesewas: perTicket,
-        ref_type: 'ticket_payment',
-        ref_id: id,
-        memo: checkout.paystack_ref,
-      },
-      {
-        tenant_id: checkout.tenant_id,
-        event_id: checkout.event_id,
-        account: 'ticket_revenue',
-        direction: 'CR',
-        amount_pesewas: perTicket,
-        ref_type: 'ticket_payment',
-        ref_id: id,
-        memo: checkout.paystack_ref,
-      },
-    ])
+  // Single atomic RPC: stock decrement + all inserts in one transaction
+  const { data, error } = await supabase.rpc('issue_tickets_atomic', {
+    p_checkout_id:    checkout.id,
+    p_tenant_id:      checkout.tenant_id,
+    p_event_id:       checkout.event_id,
+    p_ticket_type_id: checkout.ticket_type_id,
+    p_quantity:       checkout.quantity,
+    p_buyer_name:     checkout.buyer_name,
+    p_buyer_phone:    checkout.buyer_phone,
+    p_buyer_email:    checkout.buyer_email,
+    p_paystack_ref:   checkout.paystack_ref,
+    p_amount_pesewas: checkout.amount_pesewas,
+    p_fee_pesewas:    opts?.fee_pesewas ?? 0,
+    p_method:         method,
+    p_totp_secrets:   totpSecretsEnc,
+    p_serials:        serials,
+    p_token_hashes:   tokenHashes,
+  })
+
+  if (error) {
+    const msg = error.message ?? ''
+    if (msg.includes('sold_out')) {
+      await supabase.from('pending_checkouts').update({ status: 'failed' }).eq('id', checkout.id)
+      throw new Error('sold_out')
+    }
+    throw new Error(msg || 'issue_tickets_failed')
   }
+
+  const ticketIds = ((data as unknown) as Array<{ ticket_id: string }> ?? []).map(r => r.ticket_id)
+
+  // Store encrypted tokens in pending_checkouts for the status-polling endpoint.
+  // Encrypted at rest so a DB breach alone does not reveal usable access tokens.
+  const encryptedTokens = rawTokens.map(t => encryptSecret(t, totpKey()))
+  void supabase.from('pending_checkouts').update({ access_tokens: encryptedTokens }).eq('id', checkout.id)
 
   // Fire-and-forget notifications — failure must not break ticket issuance
-  void notifyBuyers(supabase, checkout, ticketIds, accessTokens)
+  void notifyBuyers(supabase, checkout, ticketIds, rawTokens)
 
-  return { ticket_ids: ticketIds, access_tokens: accessTokens }
+  return { ticket_ids: ticketIds, access_tokens: rawTokens }
 }
 
 async function notifyBuyers(

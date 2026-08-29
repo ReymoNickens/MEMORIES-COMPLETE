@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServiceRole } from '@/lib/supabase/server'
-import { getStaffSession } from '@/lib/staff-session'
+import { getValidatedStaffSession } from '@/lib/staff-session'
 
 export async function GET(req: NextRequest) {
-  const staff = await getStaffSession()
-  if (!staff) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  const eventId = req.nextUrl.searchParams.get('event_id')
   const supabase = createSupabaseServiceRole()
+  const staff = await getValidatedStaffSession(supabase)
+  if (!staff || !(staff.roles.includes('owner') || staff.roles.includes('manager'))) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
+  }
+  const eventId = req.nextUrl.searchParams.get('event_id')
   if (eventId) {
     const { data } = await supabase.rpc('compute_settlement', { p_event_id: eventId })
     return NextResponse.json({ settlement: data })
@@ -20,13 +22,13 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const staff = await getStaffSession()
+  const supabase = createSupabaseServiceRole()
+  const staff = await getValidatedStaffSession(supabase)
   if (!staff || !(staff.roles.includes('owner') || staff.roles.includes('manager'))) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   }
   const body = await req.json().catch(() => null) as { event_id?: string } | null
   if (!body?.event_id) return NextResponse.json({ error: 'event_id required' }, { status: 400 })
-  const supabase = createSupabaseServiceRole()
   const { data: computed } = await supabase.rpc('compute_settlement', { p_event_id: body.event_id })
   const c = computed as Record<string, number>
   const { data: sub } = await supabase
@@ -58,7 +60,8 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  const staff = await getStaffSession()
+  const supabase = createSupabaseServiceRole()
+  const staff = await getValidatedStaffSession(supabase)
   if (!staff || !staff.roles.includes('owner')) {
     return NextResponse.json({ error: 'owner only' }, { status: 403 })
   }
@@ -66,13 +69,12 @@ export async function PATCH(req: NextRequest) {
   if (!body?.id || !['approved', 'paid'].includes(body.status ?? '')) {
     return NextResponse.json({ error: 'id and status required' }, { status: 400 })
   }
-  const supabase = createSupabaseServiceRole()
   const patch: Record<string, unknown> = { status: body.status }
   if (body.status === 'approved') {
     patch.approved_by = staff.user_id
     patch.approved_at = new Date().toISOString()
   }
   if (body.status === 'paid') patch.paid_at = new Date().toISOString()
-  await supabase.from('settlement_statements').update(patch).eq('id', body.id)
+  await supabase.from('settlement_statements').update(patch).eq('id', body.id).eq('tenant_id', staff.tenant_id)
   return NextResponse.json({ ok: true })
 }

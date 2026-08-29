@@ -70,7 +70,12 @@ export async function POST(req: NextRequest) {
 
   if (!ticket) return NextResponse.json({ ok: false, reason: 'not_found' } satisfies RedeemResult)
 
-  const secret = decryptSecret(ticket.totp_secret_enc as string, totpKey())
+  let secret: string
+  try {
+    secret = decryptSecret(ticket.totp_secret_enc as string, totpKey())
+  } catch {
+    return NextResponse.json({ ok: false, reason: 'invalid_code' } satisfies RedeemResult)
+  }
   if (!verifyTotp(secret, totpCode, 1)) {
     return NextResponse.json({ ok: false, reason: 'invalid_code' } satisfies RedeemResult)
   }
