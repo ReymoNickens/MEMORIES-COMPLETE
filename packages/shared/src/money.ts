@@ -32,6 +32,8 @@ export function splitPesewas(total: number, parts: number): number[] {
   const base = Math.floor(total / parts)
   const rem = total - base * parts
   const out = Array.from({ length: parts }, () => base)
-  out[parts - 1] += rem
+  // parts >= 1 is asserted above, so the last slot exists; the non-null
+  // assertion keeps this honest under noUncheckedIndexedAccess.
+  out[parts - 1] = out[parts - 1]! + rem
   return out
 }

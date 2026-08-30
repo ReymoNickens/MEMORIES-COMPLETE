@@ -29,15 +29,29 @@ Deno.serve(async (req) => {
       .eq('id', reservation.id)
 
     if ((reservation.deposit_pesewas as number) > 0) {
-      await supabase.from('ledger_entries').insert({
-        tenant_id: reservation.tenant_id,
-        account: 'forfeiture_income',
-        direction: 'CR',
-        amount_pesewas: reservation.deposit_pesewas,
-        ref_type: 'settlement',
-        ref_id: reservation.id,
-        memo: `No-show deposit forfeiture: ${reservation.guest_name}`,
-      })
+      // Both legs. Forfeiting a deposit releases a liability the club was
+      // holding and recognises it as income; posting only the credit left the
+      // book unbalanced, and the ledger balance trigger now rejects it.
+      await supabase.from('ledger_entries').insert([
+        {
+          tenant_id: reservation.tenant_id,
+          account: 'deposit_liability',
+          direction: 'DR',
+          amount_pesewas: reservation.deposit_pesewas,
+          ref_type: 'settlement',
+          ref_id: reservation.id,
+          memo: `No-show deposit released: ${reservation.guest_name}`,
+        },
+        {
+          tenant_id: reservation.tenant_id,
+          account: 'forfeiture_income',
+          direction: 'CR',
+          amount_pesewas: reservation.deposit_pesewas,
+          ref_type: 'settlement',
+          ref_id: reservation.id,
+          memo: `No-show deposit forfeiture: ${reservation.guest_name}`,
+        },
+      ])
     }
 
     processed++

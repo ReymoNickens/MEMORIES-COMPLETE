@@ -7,8 +7,19 @@ import type { RedeemResult } from '@evolveit/shared/types'
 
 type ScanState = 'idle' | 'pass' | 'fail' | 'already_used' | 'cannot_verify'
 const HUB_URL = process.env['NEXT_PUBLIC_HUB_URL'] ?? 'http://hub.lan:3001'
-const DEVICE_ID = typeof window !== 'undefined' ? (localStorage.getItem('device_id') ?? '') : ''
-const DOOR_LABEL = typeof window !== 'undefined' ? (localStorage.getItem('door_label') ?? 'Door 1') : 'Door 1'
+// Read inside the component, not at module scope: at module scope these are
+// evaluated once during the server render, where window does not exist, and
+// the client then hydrates with the stale values.
+function deviceCreds() {
+  if (typeof window === 'undefined') return { id: '', key: '', door: 'Door 1' }
+  return {
+    id: localStorage.getItem('device_id') ?? '',
+    // The id identifies the scanner; the key authenticates it. The old code
+    // sent the id as the bearer token, which the door never accepted.
+    key: localStorage.getItem('device_key') ?? '',
+    door: localStorage.getItem('door_label') ?? 'Door 1',
+  }
+}
 
 export default function ScannerPage() {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -16,7 +27,12 @@ export default function ScannerPage() {
   const [scanState, setScanState] = useState<ScanState>('idle')
   const [result, setResult] = useState<RedeemResult | null>(null)
   const [hubStatus, setHubStatus] = useState<'online' | 'degraded' | 'offline'>('offline')
+  const [creds, setCreds] = useState(() => ({ id: '', key: '', door: 'Door 1' }))
   const lockRef = useRef(false)
+  const credsRef = useRef(creds)
+  credsRef.current = creds
+
+  useEffect(() => { setCreds(deviceCreds()) }, [])
 
   useEffect(() => {
     const reader = new BrowserQRCodeReader()
@@ -55,11 +71,12 @@ export default function ScannerPage() {
       return
     }
 
+    const { id, key, door } = credsRef.current
     const body = JSON.stringify({
       ticket_id: parsed.ticketId,
       totp_code: parsed.totpCode,
-      device_id: DEVICE_ID,
-      door_label: DOOR_LABEL,
+      device_id: id,
+      door_label: door,
     })
 
     let res: RedeemResult | null = null
@@ -67,7 +84,7 @@ export default function ScannerPage() {
     try {
       const hubRes = await fetch(`${HUB_URL}/v1/redeem`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
         body,
         signal: AbortSignal.timeout(3000),
       })
@@ -76,7 +93,7 @@ export default function ScannerPage() {
       try {
         const cloudRes = await fetch('/api/v1/redeem', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${DEVICE_ID}` },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
           body,
           signal: AbortSignal.timeout(10_000),
         })
@@ -157,7 +174,7 @@ export default function ScannerPage() {
       <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 py-4 bg-black/55">
         <div>
           <p className="text-[11px] uppercase tracking-[0.28em] text-white">Memories<span className="text-[#B8122A]">.</span></p>
-          <p className="mt-1 text-[11px] uppercase tracking-[0.2em] text-white/70">{DOOR_LABEL}</p>
+          <p className="mt-1 text-[11px] uppercase tracking-[0.2em] text-white/70">{creds.door}</p>
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10px] uppercase tracking-[0.18em] text-white/60">{hubStatus}</span>
@@ -172,7 +189,7 @@ export default function ScannerPage() {
         >
           {scanState === 'pass' && (
             <>
-              <div className="text-white text-[120px] leading-none mb-4">\u2713</div>
+              <div className="text-white text-[120px] leading-none mb-4">✓</div>
               <p className="text-scanner-lg text-white font-bold">ADMIT</p>
               {result?.holder_name && (
                 <p className="text-scanner-md text-white mt-2">{result.holder_name}</p>
@@ -185,7 +202,7 @@ export default function ScannerPage() {
 
           {scanState === 'fail' && (
             <>
-              <div className="text-white text-[120px] leading-none mb-4">\u2715</div>
+              <div className="text-white text-[120px] leading-none mb-4">✕</div>
               <p className="text-scanner-lg text-white font-bold capitalize">
                 {result?.reason?.replace(/_/g, ' ') ?? 'Invalid'}
               </p>
@@ -194,12 +211,12 @@ export default function ScannerPage() {
 
           {scanState === 'already_used' && (
             <>
-              <div className="text-white text-[80px] leading-none mb-4">\u26a0</div>
+              <div className="text-white text-[80px] leading-none mb-4">⚠</div>
               <p className="text-scanner-lg text-white font-bold">ALREADY USED</p>
               {result?.scanned_at && (
                 <p className="text-scanner-md text-white mt-2">
                   Scanned {new Date(result.scanned_at).toLocaleTimeString('en-GH', { hour: '2-digit', minute: '2-digit' })}
-                  {result.door_label ? ` \u00b7 ${result.door_label}` : ''}
+                  {result.door_label ? ` · ${result.door_label}` : ''}
                 </p>
               )}
             </>

@@ -1,169 +1,195 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { createSupabaseClient } from '@/lib/supabase/client'
+import { useCallback, useEffect, useState } from 'react'
 import { formatAmount } from '@evolveit/shared/money'
+import { FloorShell, ageTone } from '@/components/FloorShell'
 
-interface VenueTable {
+interface OrderItem { id: string; product_name: string; quantity: number; status: string }
+interface Order {
   id: string
-  label: string
-  zone: string
-  orders: TableOrder[]
-}
-
-interface TableOrder {
-  id: string
+  venue_table_id: string | null
   amount_pesewas: number
   payment_source: string
   status: string
   created_at: string
-  items: Array<{ product_name: string; quantity: number; status: string }>
+  paid_at: string | null
+  guest_name: string
+  order_items: OrderItem[]
+}
+interface Table {
+  id: string
+  label: string
+  zone: string
+  seats: number
+  min_spend_pesewas: number
+}
+interface Cash {
+  owed_pesewas: number
+  order_count: number
+  counted: boolean
+  counted_pesewas: number | null
 }
 
 export default function WaiterPage() {
-  const [tables, setTables] = useState<VenueTable[]>([])
-  const [selectedTable, setSelectedTable] = useState<VenueTable | null>(null)
-  const [cashAmount, setCashAmount] = useState('')
-  const [showCashSheet, setShowCashSheet] = useState<string | null>(null)
+  const [tables, setTables] = useState<Table[]>([])
+  const [orders, setOrders] = useState<Order[]>([])
+  const [cash, setCash] = useState<Cash | null>(null)
+  const [noShift, setNoShift] = useState(false)
+  const [open, setOpen] = useState<Table | null>(null)
+  const [clock, setClock] = useState('')
 
-  useEffect(() => {
-    const supabase = createSupabaseClient()
-    void supabase
-      .from('venue_tables')
-      .select(`
-        id, label, zone,
-        orders!venue_table_id(id, amount_pesewas, payment_source, status, created_at,
-          order_items(product_name, quantity, status))
-      `)
-      .eq('is_active', true)
-      .then(({ data }) => {
-        if (data) setTables(data as unknown as VenueTable[])
-      })
+  const load = useCallback(async () => {
+    const res = await fetch('/api/waiter', { cache: 'no-store' })
+    if (res.status === 401) { window.location.href = '/staff/login'; return }
+    const d = await res.json() as {
+      tables?: Table[]; orders?: Order[]; cash?: Cash; no_shift?: boolean
+    }
+    setTables(d.tables ?? [])
+    setOrders(d.orders ?? [])
+    setCash(d.cash ?? null)
+    setNoShift(!!d.no_shift)
   }, [])
 
-  function tableStatus(table: VenueTable): 'empty' | 'pending' | 'done' {
-    const active = table.orders.filter(o => o.status !== 'voided' && o.status !== 'complete')
-    if (active.length === 0) return 'empty'
-    const anyPending = active.some(o =>
-      o.items.some(i => i.status !== 'delivered' && i.status !== 'voided')
-    )
-    return anyPending ? 'pending' : 'done'
+  useEffect(() => {
+    void load()
+    const poll = setInterval(() => void load(), 5000)
+    const tick = setInterval(() => {
+      setClock(new Date().toLocaleTimeString('en-GH', { hour: '2-digit', minute: '2-digit' }))
+    }, 1000)
+    return () => { clearInterval(poll); clearInterval(tick) }
+  }, [load])
+
+  function forTable(id: string) {
+    return orders.filter(o => o.venue_table_id === id)
   }
 
-  const statusColor: Record<string, string> = {
-    empty: 'border-ev-border text-ev-muted',
-    pending: 'border-yellow-500 text-yellow-600 bg-yellow-50',
-    done: 'border-green-600 text-green-700 bg-green-50',
+  /**
+   * Three states, and they mean different things to a server crossing a dark
+   * room: nothing running, something waiting at the bar, or everything down
+   * and the table is drinking. The old page called these empty / pending /
+   * done, which told you about the data rather than about the table.
+   */
+  function state(id: string): { key: string; label: string; border: string; bg: string } {
+    const live = forTable(id).filter(o => o.status !== 'complete')
+    if (live.length === 0) return { key: 'clear', label: 'Clear', border: '#2A242C', bg: '#100E14' }
+    const waiting = live.some(o => o.order_items.some(i => i.status === 'pending' || i.status === 'preparing'))
+    if (waiting) return { key: 'waiting', label: 'At the bar', border: '#E0A24A', bg: '#2A1F0C' }
+    return { key: 'served', label: 'Served', border: '#1A5C2E', bg: '#0C1E12' }
   }
 
-  async function collectCash(orderId: string) {
-    const pesewas = Math.round(parseFloat(cashAmount) * 100)
-    if (!pesewas || isNaN(pesewas)) return
-    const supabase = createSupabaseClient()
-    await supabase
-      .from('cash_collections')
-      .update({ physical_amount_pesewas: pesewas, handed_in_at: new Date().toISOString() })
-      .eq('order_id', orderId)
-    setShowCashSheet(null)
-    setCashAmount('')
-  }
+  const spend = (id: string) =>
+    forTable(id).reduce((s, o) => s + Number(o.amount_pesewas), 0)
 
   return (
-    <div className="min-h-screen bg-ev-page pb-20">
-      <div className="bg-ev-bg px-4 py-4 text-center">
-        <h1 className="text-h1 text-white font-display">My Tables</h1>
-      </div>
+    <FloorShell station="My section" clock={clock}>
+      <main className="px-4 pb-24 pt-4">
+        {noShift && (
+          <p className="mt-16 text-center text-[14px] text-[#8A8580]">
+            No shift is open yet.
+          </p>
+        )}
 
-      {/* Table grid */}
-      <div className="grid grid-cols-3 gap-3 p-4 max-w-lg mx-auto">
-        {tables.map(table => {
-          const status = tableStatus(table)
-          return (
-            <button
-              key={table.id}
-              onClick={() => setSelectedTable(table)}
-              className={`rounded-lg border-2 p-3 text-center min-h-tap transition-colors ${statusColor[status]}`}
-            >
-              <div className="text-h3 font-semibold">{table.label}</div>
-              <div className="text-micro capitalize">{status}</div>
-            </button>
-          )
-        })}
-      </div>
+        <div className="mx-auto grid max-w-lg grid-cols-2 gap-3 sm:grid-cols-3">
+          {tables.map(t => {
+            const st = state(t.id)
+            const spent = spend(t.id)
+            const short = t.min_spend_pesewas > 0 && spent < t.min_spend_pesewas
+            return (
+              <button
+                key={t.id}
+                onClick={() => setOpen(t)}
+                className="border p-3 text-left"
+                style={{ borderColor: st.border, background: st.bg }}
+              >
+                <p className="font-display text-[20px] leading-none">{t.label}</p>
+                <p className="mt-2 text-[10px] uppercase tracking-[0.18em] text-[#C4B8A8]">{st.label}</p>
+                <p className="mt-2 font-mono text-[13px]">{formatAmount(spent)}</p>
+                {/* Min spend is the floor manager's whole job and the schema has
+                    carried it since 003, but no screen had ever shown it. */}
+                {t.min_spend_pesewas > 0 && (
+                  <p className={`mt-1 text-[10px] uppercase tracking-[0.14em] ${short ? 'text-[#E0A24A]' : 'text-[#7DCF8A]'}`}>
+                    {short
+                      ? `${formatAmount(t.min_spend_pesewas - spent)} to min`
+                      : 'Min met'}
+                  </p>
+                )}
+              </button>
+            )
+          })}
+        </div>
 
-      {/* Table detail panel */}
-      {selectedTable && (
-        <div className="fixed inset-0 bg-black/50 z-10" onClick={() => setSelectedTable(null)}>
+        {/* What the server owes the house. Read-only: a server who can type
+            their own hand-in number is not being reconciled. */}
+        {cash && (
+          <section className="mx-auto mt-8 max-w-lg border border-[#2A242C] bg-[#100E14] p-4">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-[#8A8580]">Cash in your apron</p>
+            <p className="mt-2 font-mono text-[32px] text-[#F3EDE4]">{formatAmount(cash.owed_pesewas)}</p>
+            <p className="mt-1 text-[12px] text-[#8A8580]">
+              {cash.order_count} cash order{cash.order_count === 1 ? '' : 's'} tonight.
+            </p>
+            <p className="mt-3 border-t border-[#2A242C] pt-3 text-[12px] text-[#8A8580]">
+              {cash.counted
+                ? `Counted in at ${formatAmount(cash.counted_pesewas ?? 0)} by the duty manager.`
+                : 'A manager counts you down at the end of the night. Do not leave without it.'}
+            </p>
+          </section>
+        )}
+      </main>
+
+      {open && (
+        <div className="fixed inset-0 z-10 bg-black/70" onClick={() => setOpen(null)}>
           <div
-            className="absolute bottom-0 left-0 right-0 bg-ev-card rounded-t-2xl max-h-[80vh] overflow-y-auto p-4"
+            className="absolute bottom-0 left-0 right-0 max-h-[80vh] overflow-y-auto border-t border-[#2A242C] bg-[#100E14] p-5"
             onClick={e => e.stopPropagation()}
           >
-            <h2 className="text-h2 text-ev-dark mb-4">{selectedTable.label}</h2>
+            <div className="flex items-baseline justify-between">
+              <h2 className="font-display text-[28px]">{open.label}</h2>
+              <span className="text-[11px] uppercase tracking-[0.2em] text-[#8A8580]">
+                {open.zone.replace('_', ' ')} · {open.seats} seats
+              </span>
+            </div>
 
-            {selectedTable.orders.filter(o => o.status !== 'voided').map(order => (
-              <div key={order.id} className="border border-ev-border rounded-lg p-3 mb-3">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-label text-ev-muted uppercase">{order.payment_source}</span>
-                  <span className="text-label text-ev-muted uppercase">{order.status}</span>
-                </div>
+            {forTable(open.id).length === 0 && (
+              <p className="mt-6 text-[14px] text-[#8A8580]">Nothing running on this table.</p>
+            )}
 
-                {order.items.map((item, i) => (
-                  <div key={i} className="flex justify-between text-body-md text-ev-dark py-1">
-                    <span>{item.quantity}× {item.product_name}</span>
-                    <span className="text-label text-ev-muted uppercase">{item.status}</span>
+            {forTable(open.id).map(o => {
+              const age = ageTone(o.paid_at ?? o.created_at)
+              return (
+                <div key={o.id} className="mt-4 border border-[#2A242C] p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] uppercase tracking-[0.18em] text-[#8A8580]">
+                      {o.status === 'on_tab' ? 'Open tab' : o.payment_source} · {o.status}
+                    </span>
+                    <span className={`font-mono text-[12px] ${age.className}`}>{age.label}</span>
                   </div>
-                ))}
-
-                <div className="flex justify-between items-center mt-3 pt-2 border-t border-ev-border">
-                  <span className="text-body-md font-mono text-ev-dark">{formatAmount(order.amount_pesewas)}</span>
-                  {order.payment_source === 'cash' && order.status === 'paid' && (
-                    <button
-                      onClick={() => setShowCashSheet(order.id)}
-                      className="bg-ev-success text-white text-label px-4 py-2 rounded-lg min-h-tap"
-                    >
-                      Cash Collected
-                    </button>
-                  )}
+                  {o.order_items.map(i => (
+                    <div key={i.id} className="flex justify-between py-1 text-[14px]">
+                      <span>{i.quantity}× {i.product_name}</span>
+                      <span
+                        className="text-[11px] uppercase tracking-[0.14em]"
+                        style={{ color: i.status === 'ready' ? '#7DCF8A' : i.status === 'delivered' ? '#6B6570' : '#E0A24A' }}
+                      >
+                        {i.status === 'ready' ? 'Collect' : i.status}
+                      </span>
+                    </div>
+                  ))}
+                  <p className="mt-2 border-t border-[#2A242C] pt-2 text-right font-mono text-[16px]">
+                    {formatAmount(o.amount_pesewas)}
+                  </p>
                 </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+              )
+            })}
 
-      {/* Cash collection bottom sheet */}
-      {showCashSheet && (
-        <div className="fixed inset-0 bg-black/60 z-20 flex items-end">
-          <div className="w-full bg-ev-card rounded-t-2xl p-6 space-y-4">
-            <h3 className="text-h2 text-ev-dark">Collect Cash</h3>
-            <div className="flex items-center border border-ev-border rounded-lg overflow-hidden">
-              <span className="px-4 text-body-lg text-ev-muted bg-gray-50 h-14 flex items-center border-r border-ev-border">GHS</span>
-              <input
-                type="number"
-                step="0.01"
-                value={cashAmount}
-                onChange={e => setCashAmount(e.target.value)}
-                placeholder="0.00"
-                className="flex-1 h-14 px-4 text-h2 font-mono text-ev-dark focus:outline-none"
-              />
-            </div>
-            <div className="flex gap-3">
-              <button
-                onClick={() => { setShowCashSheet(null); setCashAmount('') }}
-                className="flex-1 h-14 border border-ev-border rounded-lg text-ev-dark text-h3 min-h-tap-lg"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => void collectCash(showCashSheet)}
-                className="flex-1 h-14 bg-ev-success text-white rounded-lg text-h3 min-h-tap-lg"
-              >
-                Confirm
-              </button>
-            </div>
+            <button
+              onClick={() => setOpen(null)}
+              className="mt-6 h-12 w-full border border-[#2A242C] text-[12px] uppercase tracking-[0.2em] text-[#C4B8A8]"
+            >
+              Close
+            </button>
           </div>
         </div>
       )}
-    </div>
+    </FloorShell>
   )
 }

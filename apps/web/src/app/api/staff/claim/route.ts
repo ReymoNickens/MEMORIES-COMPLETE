@@ -2,15 +2,24 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServiceRole } from '@/lib/supabase/server'
 import { getStaffSession, staffCookieHeader } from '@/lib/staff-session'
 
+const ALL_STATIONS = ['door', 'bar', 'kitchen', 'floor', 'cashier']
+
 const ROLE_STATIONS: Record<string, string[]> = {
-  owner: ['door', 'bar', 'kitchen', 'floor', 'cashier'],
-  manager: ['door', 'bar', 'kitchen', 'floor', 'cashier'],
+  owner: ALL_STATIONS,
+  manager: ALL_STATIONS,
+  event_manager: ALL_STATIONS,
   door: ['door'],
+  front_office: ['door', 'floor'],
   bartender: ['bar'],
   kitchen: ['kitchen'],
   waiter: ['floor'],
   cashier: ['cashier'],
+  // Roles that hold no station: they have no till and no rail to work.
   organiser: [],
+  hr: [],
+  finance: [],
+  dj: [],
+  mc: [],
 }
 
 export async function POST(req: NextRequest) {

@@ -23,24 +23,31 @@ const config: Config = {
         'scanner-lg': ['40px', { lineHeight: '1.1', fontWeight: '700' }],
         'scanner-md': ['24px', { lineHeight: '1.2', fontWeight: '400' }],
       },
+      // One palette, matching the tokens in globals.css. The house is a dark
+      // room: near-black ground, bone type, crimson for the one thing that
+      // matters on a screen. Two competing palettes under the same `ev.*`
+      // names is why the customer walked from a black landing page onto a
+      // grey-white menu.
       colors: {
         ev: {
-          bg:         '#0A0B0C',
-          elevated:   '#121416',
-          page:       '#F8F9FA',
-          card:       '#FFFFFF',
-          primary:    '#ECECE8',
-          secondary:  '#9A9E9F',
-          dark:       '#111111',
-          muted:      '#6B7380',
-          navy:       '#0B1F4B',
-          crimson:    '#B8122A',
-          accent:     '#C8CCD4',
+          bg:         '#08070D',  // the room
+          elevated:   '#100E14',  // a card lifted off it
+          card:       '#16131A',
+          page:       '#08070D',
+          primary:    '#F3EDE4',  // bone
+          secondary:  '#C4B8A8',
+          dark:       '#14090B',
+          muted:      '#8A8580',
+          faint:      '#6B6570',
+          crimson:    '#B8122A',  // the only accent
+          accent:     '#C4B8A8',
           success:    '#1A5C2E',
-          warning:    '#B86800',
-          border:     '#D8DCE2',
-          borderDark: '#2A2D32',
-          momo:       '#FFCB05',
+          successText:'#7DCF8A',
+          warning:    '#E0A24A',
+          error:      '#B8122A',
+          border:     '#2A242C',
+          borderDark: '#2A242C',
+          momo:       '#FFCB05',  // MTN yellow, not ours to change
         },
       },
       fontFamily: {

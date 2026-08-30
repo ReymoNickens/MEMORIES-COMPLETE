@@ -75,6 +75,7 @@ export async function POST(req: NextRequest) {
     p_device_name: deviceName,
     p_door_label: doorLabel,
     p_mode: 'online',
+    p_scanned_at: null,
   })
 
   return NextResponse.json(result as RedeemResult)

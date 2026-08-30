@@ -22,6 +22,8 @@ interface MenuResponse {
   products: Product[]
 }
 
+interface Placed { token: string; amount_pesewas: number }
+
 interface CartItem {
   product: Product
   quantity: number
@@ -37,6 +39,8 @@ export default function MenuPage() {
   const [paymentSource, setPaymentSource] = useState<'momo' | 'cash'>('momo')
   const [view, setView] = useState<'menu' | 'cart'>('menu')
   const [isLoading, setIsLoading] = useState(false)
+  const [placed, setPlaced] = useState<Placed | null>(null)
+  const [orderError, setOrderError] = useState('')
 
   useEffect(() => {
     void fetch(`/api/menu/${token}`)
@@ -80,6 +84,7 @@ export default function MenuPage() {
   async function checkout() {
     if (!validatePhone() || !guestName) return
     setIsLoading(true)
+    setOrderError('')
     try {
       const res = await fetch('/api/orders/initiate', {
         method: 'POST',
@@ -92,14 +97,43 @@ export default function MenuPage() {
           payment_source: paymentSource,
         }),
       })
-      const data = await res.json() as { authorization_url?: string; order_id?: string; status?: string }
+      const data = await res.json() as {
+        authorization_url?: string; order_id?: string; status?: string
+        amount_pesewas?: number; error?: string
+      }
+
+      // Every failure used to land here silently: the button spun, came back,
+      // and nothing happened. A guest at a table has no way to tell a sold-out
+      // item from a dead network.
+      if (!res.ok) {
+        setOrderError(
+          res.status === 401
+            ? 'Cash is taken by a member of staff. Call your server over, or pay with MoMo.'
+            : data.error ?? 'We could not place that order. Try again, or call your server.',
+        )
+        return
+      }
+
       if (data.authorization_url) {
         window.location.href = data.authorization_url
-      } else if (data.status === 'paid') {
+        return
+      }
+
+      if (data.order_id && data.status === 'paid') {
         sessionStorage.removeItem(`cart-${token}`)
         setCart([])
-        alert('Order placed! Your waiter will bring your drinks.')
+        // The last four of the order id is the number called at the bar, so
+        // the guest needs to be holding it — not an alert they have dismissed.
+        setPlaced({
+          token: data.order_id.slice(-4).toUpperCase(),
+          amount_pesewas: data.amount_pesewas ?? totalPesewas,
+        })
+        return
       }
+
+      setOrderError('That order did not go through. Nothing has been charged.')
+    } catch {
+      setOrderError('Lost the connection. Nothing has been charged — try again.')
     } finally {
       setIsLoading(false)
     }
@@ -115,16 +149,40 @@ export default function MenuPage() {
   }, {})
 
   if (!menu) return (
-    <div className="min-h-screen bg-ev-page flex items-center justify-center">
-      <p className="text-body-md text-ev-muted">Loading menu...</p>
+    <div className="flex min-h-screen items-center justify-center bg-[#08070D]">
+      <p className="text-[13px] uppercase tracking-[0.24em] text-[#8A8580]">Reading the menu…</p>
+    </div>
+  )
+
+  if (placed) return (
+    <div className="flex min-h-screen flex-col justify-center bg-[#08070D] px-6 text-[#F3EDE4]">
+      <p className="text-[11px] uppercase tracking-[0.28em] text-[#8A8580]">Order in</p>
+      <p className="mt-4 font-display text-[96px] leading-none text-ev-crimson">{placed.token}</p>
+      <p className="mt-4 max-w-xs text-[15px] leading-relaxed text-[#C4B8A8]">
+        That is your number. The bar calls it when your round is up — keep this
+        screen, or remember the four digits.
+      </p>
+      <p className="mt-6 font-mono text-[20px]">{formatAmount(placed.amount_pesewas)}</p>
+      <p className="mt-1 text-[12px] text-[#8A8580]">{menu.table.label}</p>
+      <button
+        onClick={() => { setPlaced(null); setView('menu') }}
+        className="mt-10 h-14 max-w-xs border border-[#2A242C] text-[12px] uppercase tracking-[0.22em] text-[#C4B8A8]"
+      >
+        Order something else
+      </button>
     </div>
   )
 
   return (
     <div className="min-h-screen bg-ev-page pb-24">
       <div className="bg-ev-bg px-4 py-5 text-center">
-        <h1 className="text-h1 text-white font-display">Memories Night Club</h1>
+        <h1 className="font-display text-h1 text-white">Memories Night Club</h1>
         <p className="text-body-md text-ev-secondary">{menu.table.label}</p>
+        {menu.table.min_spend_pesewas > 0 && (
+          <p className="mt-1 text-[11px] uppercase tracking-[0.18em] text-ev-secondary">
+            Minimum spend {formatAmount(menu.table.min_spend_pesewas)}
+          </p>
+        )}
       </div>
 
       {view === 'menu' && (
@@ -215,6 +273,10 @@ export default function MenuPage() {
             <span className="text-body-lg text-ev-dark font-semibold">Total</span>
             <span className="text-h1 font-mono text-ev-crimson">{formatAmount(totalPesewas)}</span>
           </div>
+
+          {orderError && (
+            <p className="border-l-2 border-ev-crimson py-2 pl-3 text-[13px] text-ev-crimson">{orderError}</p>
+          )}
 
           <button
             onClick={checkout}

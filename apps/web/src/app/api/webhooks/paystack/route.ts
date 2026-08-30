@@ -47,6 +47,14 @@ export async function POST(req: NextRequest) {
     const ref = String(payload.data.reference ?? '')
     if (!ref) return NextResponse.json({ ok: true, ignored: 'no_reference' })
 
+    // A valid signature proves Paystack sent this, not that the customer paid
+    // what we asked for. Partial debits, currency mismatches and abandoned
+    // charges all arrive on this endpoint, so read the amount off the payload
+    // and refuse anything that does not settle the checkout in full.
+    const paidPesewas = Number(payload.data.amount ?? 0)
+    const currency = String(payload.data.currency ?? 'GHS')
+    const chargeStatus = String(payload.data.status ?? 'success')
+
     const { data: checkout } = await supabase
       .from('pending_checkouts')
       .select('*')
@@ -54,6 +62,24 @@ export async function POST(req: NextRequest) {
       .maybeSingle()
 
     if (checkout && checkout.status !== 'issued') {
+      const expected = Number(checkout.amount_pesewas)
+      if (chargeStatus !== 'success' || currency !== 'GHS' || !Number.isFinite(paidPesewas) || paidPesewas < expected) {
+        // Leave the checkout pending rather than failing it: Paystack retries,
+        // and a customer who completes a second leg should still get tickets.
+        await supabase.from('webhook_events').delete().eq('paystack_event_id', eventId)
+        return NextResponse.json(
+          {
+            ok: false,
+            ignored: 'underpaid_or_unsuccessful',
+            expected_pesewas: expected,
+            paid_pesewas: Number.isFinite(paidPesewas) ? paidPesewas : 0,
+            currency,
+            status: chargeStatus,
+          },
+          { status: 200 },
+        )
+      }
+
       await supabase.from('pending_checkouts').update({ status: 'paid' }).eq('id', checkout.id)
       try {
         await issueTicketsFromCheckout(supabase, checkout, {
@@ -69,8 +95,16 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const { data: order } = await supabase.from('orders').select('id').eq('paystack_ref', ref).maybeSingle()
+    const { data: order } = await supabase
+      .from('orders')
+      .select('id, amount_pesewas')
+      .eq('paystack_ref', ref)
+      .maybeSingle()
     if (order) {
+      if (chargeStatus !== 'success' || currency !== 'GHS' || paidPesewas < Number(order.amount_pesewas)) {
+        await supabase.from('webhook_events').delete().eq('paystack_event_id', eventId)
+        return NextResponse.json({ ok: false, ignored: 'order_underpaid' }, { status: 200 })
+      }
       const { error: paidErr } = await supabase.rpc('mark_order_paid', {
         p_order_id: order.id,
         p_fee_pesewas: Number(payload.data.fees ?? 0) || 0,

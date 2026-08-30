@@ -16,7 +16,7 @@ export default function CheckoutReturnPage() {
 
   async function confirmDemo() {
     setBusy(true)
-    setMsg('Cutting the ticket\u2026')
+    setMsg('Cutting the ticket…')
     const res = await fetch('/api/checkout/initiate', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -60,7 +60,7 @@ export default function CheckoutReturnPage() {
             onClick={() => void confirmDemo()}
             className="mt-8 h-14 px-8 bg-ev-momo text-[13px] font-semibold uppercase tracking-[0.18em] text-[#14090B]"
           >
-            {busy ? 'Printing\u2026' : 'Confirm MoMo'}
+            {busy ? 'Printing…' : 'Confirm MoMo'}
           </button>
         )}
       </div>

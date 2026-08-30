@@ -1,7 +1,9 @@
 import express from 'express'
+import { timingSafeEqual } from 'node:crypto'
 import { db } from './db.js'
 import { syncDown, syncUp } from './sync.js'
 import { verifyTotp } from '@evolveit/shared/totp'
+import { hashDeviceKey } from '@evolveit/shared/crypto'
 import type { RedeemRequest, RedeemResult } from '@evolveit/shared/types'
 
 const app = express()
@@ -9,6 +11,25 @@ app.use(express.json())
 
 const PORT = process.env['HUB_PORT'] ? parseInt(process.env['HUB_PORT']) : 3001
 const HUB_SECRET = process.env['HUB_SECRET'] ?? ''
+
+if (!HUB_SECRET) {
+  // The hub sits on the venue LAN with the door, the bar and the kitchen on
+  // it. Refusing to start beats running wide open on a network anyone in the
+  // building can join.
+  throw new Error('HUB_SECRET is required')
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a)
+  const right = Buffer.from(b)
+  if (left.length !== right.length || left.length === 0) return false
+  return timingSafeEqual(left, right)
+}
+
+function hubSecretOk(req: express.Request): boolean {
+  const presented = req.headers['x-hub-secret']
+  return typeof presented === 'string' && safeEqual(presented, HUB_SECRET)
+}
 
 // SSE clients for bar/kitchen displays
 const sseClients = new Map<number, { res: express.Response; station: string }>()
@@ -23,12 +44,26 @@ app.get('/v1/health', (_req, res) => {
 app.post('/v1/redeem', (req, res) => {
   const { ticket_id, totp_code, device_id, door_label } = req.body as RedeemRequest
 
-  // 1. Verify device credential
+  // 1. Verify the device credential.
+  //
+  // This previously looked the device up by the id in the request body and
+  // never checked the key, so device_id was an identifier rather than a
+  // credential: anyone on the venue LAN who could guess or read one could
+  // burn tickets. The scanner now presents its key as a bearer token and it
+  // is compared against the stored hash.
+  const presentedKey = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '').trim()
+  if (!presentedKey) {
+    return res.status(401).json({ ok: false, reason: 'unauthorized' } satisfies RedeemResult)
+  }
+
   const device = db.prepare('SELECT * FROM hub_devices WHERE id = ?').get(device_id) as
     { id: string; name: string; role: string; key_hash: string; revoked_at: string | null } | undefined
 
-  if (!device || device.revoked_at) {
+  if (!device || device.revoked_at || !safeEqual(hashDeviceKey(presentedKey), device.key_hash)) {
     return res.status(401).json({ ok: false, reason: 'unauthorized' } satisfies RedeemResult)
+  }
+  if (device.role !== 'door' && device.role !== 'hub') {
+    return res.status(403).json({ ok: false, reason: 'unauthorized' } satisfies RedeemResult)
   }
 
   // 2. Check revocations
@@ -81,15 +116,15 @@ app.post('/v1/redeem', (req, res) => {
 })
 
 // ── Capacity ──────────────────────────────────────────────────────────────────
-app.get('/v1/capacity', (_req, res) => {
+app.get('/v1/capacity', (req, res): void => {
+  if (!hubSecretOk(req)) { res.status(401).json({ error: 'unauthorized' }); return }
   const count = (db.prepare('SELECT COUNT(*) as n FROM hub_redemptions').get() as { n: number }).n
   res.json({ admitted: count })
 })
 
 // ── Order fan-out via SSE ─────────────────────────────────────────────────────
 app.post('/v1/order', (req, res) => {
-  const secret = req.headers['x-hub-secret']
-  if (secret !== HUB_SECRET) return res.status(401).json({ error: 'unauthorized' })
+  if (!hubSecretOk(req)) return res.status(401).json({ error: 'unauthorized' })
 
   const order = req.body as { order_id: string; station: string; table_label?: string; items: unknown[] }
   const token = order.order_id.slice(-4).toUpperCase()
@@ -118,7 +153,10 @@ app.post('/v1/order', (req, res) => {
 })
 
 // ── SSE queue for bar/kitchen displays ───────────────────────────────────────
-app.get('/v1/queue/:station', (req, res) => {
+app.get('/v1/queue/:station', (req, res): void => {
+  // Bar and kitchen displays stream every order in the venue. Gate it.
+  if (!hubSecretOk(req)) { res.status(401).json({ error: 'unauthorized' }); return }
+
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
@@ -138,8 +176,7 @@ app.get('/v1/queue/:station', (req, res) => {
 
 // ── Cloud notification receiver ───────────────────────────────────────────────
 app.post('/v1/notify', (req, res) => {
-  const secret = req.headers['x-hub-secret']
-  if (secret !== HUB_SECRET) return res.status(401).json({ error: 'unauthorized' })
+  if (!hubSecretOk(req)) return res.status(401).json({ error: 'unauthorized' })
   // Trigger immediate sync
   void syncUp()
   return res.json({ ok: true })

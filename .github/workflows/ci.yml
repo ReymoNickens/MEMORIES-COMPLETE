@@ -6,6 +6,24 @@ on:
   pull_request:
 
 jobs:
+  # The previous CI ran one unit-test file and nothing else. The repository did
+  # not type-check, the migrations were never applied by a machine, and a JSX
+  # bug that printed "×" on the door scanner shipped without comment.
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Type-check every workspace
+        run: pnpm -r --filter './apps/*' exec tsc --noEmit
+
   shared:
     runs-on: ubuntu-latest
     steps:
@@ -18,3 +36,87 @@ jobs:
         env:
           EVOLVEIT_DEMO: '1'
         run: node --experimental-strip-types --test src/crypto.test.ts
+
+  # Applies every migration in order against a real Postgres and then runs the
+  # demo night through the real payment functions. The seed asserts the night
+  # totals GHS 130,000 and that the ledger balances, so a change that silently
+  # drops revenue from a posting path fails here instead of on a Friday.
+  database:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports: ['5432:5432']
+    env:
+      PGPASSWORD: postgres
+      PSQL: psql -h localhost -U postgres -v ON_ERROR_STOP=1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stand in for the Supabase auth schema and roles
+        run: |
+          $PSQL -d postgres -c "CREATE DATABASE memories;"
+          $PSQL -d memories <<'SQL'
+          CREATE ROLE anon NOLOGIN;
+          CREATE ROLE authenticated NOLOGIN;
+          CREATE ROLE service_role NOLOGIN BYPASSRLS;
+          CREATE SCHEMA auth;
+          CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS
+            $$ SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
+          CREATE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS
+            $$ SELECT coalesce(nullif(current_setting('request.jwt.claim.role', true), ''), 'anon') $$;
+          SQL
+
+      - name: Apply migrations in order
+        run: |
+          for f in supabase/migrations/*.sql; do
+            echo "── $f"
+            $PSQL -q -d memories -f "$f"
+          done
+
+      - name: Seed and assert the demo night
+        run: $PSQL -d memories -f supabase/seed/demo_night.sql
+
+      - name: The browser key must not reach the money
+        run: |
+          set -e
+          check() {
+            if $PSQL -tAq -d memories -c "SET ROLE anon; $1" >/dev/null 2>&1; then
+              echo "FAIL: anon could run: $1"; exit 1
+            fi
+            echo "  denied: $1"
+          }
+          check "SELECT count(*) FROM staff_profiles;"
+          check "SELECT count(*) FROM payroll_lines;"
+          check "SELECT count(*) FROM shift_handovers;"
+          check "SELECT count(*) FROM staff_login_attempts;"
+          check "SELECT get_night_dashboard('d0000000-0000-4000-8000-00000000000f');"
+          check "SELECT get_waiter_cash_summary('d0000000-0000-4000-8000-00000000000f');"
+          check "SELECT get_shift_revenue('d0000000-0000-4000-8000-00000000000f');"
+
+      - name: The ledger must refuse a half-posting
+        run: |
+          if $PSQL -q -d memories -c "
+            INSERT INTO ledger_entries (tenant_id, account, direction, amount_pesewas, ref_type, ref_id)
+            SELECT id,'forfeiture_income','CR',5000,'ci_probe',gen_random_uuid() FROM tenants LIMIT 1;
+          " 2>/dev/null; then
+            echo "FAIL: an unbalanced ledger entry was accepted"; exit 1
+          fi
+          echo "  unbalanced posting rejected"
+
+      - name: A night with cash uncounted must not close
+        run: |
+          if $PSQL -q -d memories -c "
+            SELECT close_shift('d0000000-0000-4000-8000-00000000000f',
+                               'a0000000-0000-4000-8000-000000000007', 'ci');
+          " 2>/dev/null; then
+            echo "FAIL: the shift closed with a server uncounted"; exit 1
+          fi
+          echo "  close refused while a server is uncounted"

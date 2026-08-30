@@ -24,10 +24,16 @@ export function FloorShell({
   )
 }
 
-export function ageTone(iso: string): { label: string; className: string } {
-  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
+/**
+ * How long a ticket has been sitting. Three minutes is fine, seven is a
+ * complaint, past that a table is waiting and someone should be told — so the
+ * caller gets a `late` flag and can escalate the whole card, not just tint a
+ * number nobody looks at across a dark room.
+ */
+export function ageTone(iso: string): { label: string; className: string; late: boolean } {
+  const secs = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000))
   const label = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m`
-  if (secs < 180) return { label, className: 'text-[#7DCF8A]' }
-  if (secs < 420) return { label, className: 'text-[#E0A24A]' }
-  return { label, className: 'text-ev-crimson' }
+  if (secs < 180) return { label, className: 'text-[#7DCF8A]', late: false }
+  if (secs < 420) return { label, className: 'text-[#E0A24A]', late: false }
+  return { label, className: 'text-ev-crimson', late: true }
 }

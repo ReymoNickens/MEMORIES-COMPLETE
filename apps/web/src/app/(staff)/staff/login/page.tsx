@@ -30,7 +30,7 @@ export default function StaffLoginPage() {
 
   function press(d: string) {
     if (d === 'C') { setPin(''); return }
-    if (d === '\u232b') { setPin(p => p.slice(0, -1)); return }
+    if (d === '⌫') { setPin(p => p.slice(0, -1)); return }
     setPin(p => (p.length >= 6 ? p : p + d))
   }
 
@@ -53,10 +53,10 @@ export default function StaffLoginPage() {
             inputMode="tel"
           />
           <p className="mt-6 text-center font-mono text-[32px] tracking-[0.4em] text-[#F3EDE4]">
-            {pin ? '\u2022'.repeat(pin.length) : 'PIN'}
+            {pin ? '•'.repeat(pin.length) : 'PIN'}
           </p>
           <div className="mt-6 grid grid-cols-3 gap-2">
-            {['1','2','3','4','5','6','7','8','9','C','0','\u232b'].map(d => (
+            {['1','2','3','4','5','6','7','8','9','C','0','⌫'].map(d => (
               <button
                 key={d}
                 onClick={() => press(d)}
@@ -74,7 +74,7 @@ export default function StaffLoginPage() {
           onClick={() => void submit()}
           className="h-14 bg-ev-crimson text-[13px] font-semibold uppercase tracking-[0.22em] text-white disabled:opacity-40"
         >
-          {busy ? 'Opening\u2026' : 'Enter the house'}
+          {busy ? 'Opening…' : 'Enter the house'}
         </button>
       </div>
     </main>

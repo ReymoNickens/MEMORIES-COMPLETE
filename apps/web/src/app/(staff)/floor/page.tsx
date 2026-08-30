@@ -14,13 +14,14 @@ interface Reservation {
 
 interface TableRow { id: string; label: string; zone?: string }
 
+// These are the five statuses table_reservations actually carries. The old
+// map keyed off 'held' / 'booked' / 'reserved', none of which the column
+// allows, so the two commonest states rendered as raw database values.
 const STATUS: Record<string, string> = {
-  held: 'Held',
-  booked: 'Held',
-  reserved: 'Held',
-  arrived: 'Seated',
-  seated: 'Seated',
-  no_show: 'No-show',
+  pending:   'Awaiting deposit',
+  confirmed: 'Held',
+  arrived:   'Seated',
+  no_show:   'No-show',
   cancelled: 'Released',
 }
 
@@ -62,7 +63,8 @@ export default function FloorPage() {
         <div className="mt-6 grid grid-cols-3 gap-2 sm:grid-cols-4">
           {tables.map(tb => {
             const hold = rows.find(r => r.venue_tables?.label === tb.label && !['no_show', 'cancelled'].includes(r.status))
-            const seated = hold && ['arrived', 'seated'].includes(hold.status)
+            const awaiting = hold?.status === 'pending'
+            const seated = hold?.status === 'arrived'
             return (
               <button
                 key={tb.id}
@@ -70,7 +72,7 @@ export default function FloorPage() {
                 className="aspect-square border px-2 py-3 text-left"
                 style={{
                   borderColor: form.venue_table_id === tb.id ? '#B8122A' : '#2A242C',
-                  background: seated ? '#1A5C2E' : hold ? '#3A2A12' : '#100E14',
+                  background: seated ? '#0C1E12' : awaiting ? '#2A1F0C' : hold ? '#1A1420' : '#100E14',
                 }}
               >
                 <p className="font-display text-[22px] leading-none">{tb.label}</p>
@@ -94,7 +96,7 @@ export default function FloorPage() {
           {rows.map(r => (
             <div key={r.id} className="flex items-center justify-between border border-[#2A242C] bg-[#100E14] px-4 py-3">
               <div>
-                <p className="font-display text-[20px]">{r.venue_tables?.label ?? 'Table'} \u00b7 {r.guest_name}</p>
+                <p className="font-display text-[20px]">{r.venue_tables?.label ?? 'Table'} · {r.guest_name}</p>
                 <p className="text-[11px] uppercase tracking-[0.16em] text-[#8A8580]">{STATUS[r.status] ?? r.status}</p>
               </div>
               <div className="flex gap-2">

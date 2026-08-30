@@ -1,12 +1,18 @@
 // Shared domain types used across web, hub, and edge functions
 
 export type TicketStatus = 'reserved' | 'issued' | 'used' | 'voided'
-export type OrderStatus = 'pending_payment' | 'paid' | 'preparing' | 'complete' | 'voided'
+// 'on_tab' was added by migration 012 and never reached this type.
+export type OrderStatus =
+  | 'pending_payment' | 'on_tab' | 'paid' | 'preparing' | 'complete' | 'voided'
 export type OrderSource = 'counter_qr' | 'table_qr' | 'waiter'
 export type PaymentSource = 'momo' | 'cash'
 export type PaymentMethod = 'momo' | 'card' | 'ussd'
 export type PaymentStatus = 'pending' | 'successful' | 'failed' | 'refunded'
-export type StaffRole = 'owner' | 'manager' | 'door' | 'waiter' | 'bartender' | 'kitchen' | 'cashier' | 'organiser'
+export type StaffRole =
+  | 'owner' | 'manager' | 'door' | 'waiter' | 'bartender' | 'kitchen'
+  | 'cashier' | 'organiser'
+  // Added to user_roles by migration 013; this type never followed.
+  | 'hr' | 'finance' | 'front_office' | 'dj' | 'mc' | 'event_manager'
 export type DeviceRole = 'hub' | 'door' | 'bar_display' | 'kitchen_display'
 export type EventStatus = 'draft' | 'published' | 'cancelled'
 export type LedgerAccount =
@@ -21,6 +27,7 @@ export type LedgerAccount =
   | 'paystack_fees'
   | 'organiser_payable'
   | 'club_retained'
+  | 'cash_variance'
 
 export type LedgerDirection = 'DR' | 'CR'
 

@@ -1,121 +1,121 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { createSupabaseClient } from '@/lib/supabase/client'
+import { useCallback, useEffect, useState } from 'react'
 import { FloorShell, ageTone } from '@/components/FloorShell'
 
-interface OrderItem {
+interface RailItem {
   id: string
   product_name: string
   quantity: number
   status: string
 }
 
-interface OrderCard {
+interface RailOrder {
   id: string
   token: string
-  created_at: string
-  station_label: string | null
+  since: string
+  guest_name: string
   table_label: string | null
-  items: OrderItem[]
+  station_label: string | null
+  items: RailItem[]
 }
 
-const STATION = typeof window !== 'undefined' ? (localStorage.getItem('station') ?? 'Bar Main') : 'Bar Main'
-
 export default function BarDisplayPage() {
-  const [orders, setOrders] = useState<OrderCard[]>([])
+  const [orders, setOrders] = useState<RailOrder[]>([])
+  const [station, setStation] = useState<string>('')
+  const [noShift, setNoShift] = useState(false)
   const [clock, setClock] = useState('')
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState('')
+
+  // The old page read the station from localStorage at module scope, which
+  // meant it was fixed at first import, mismatched between server and client
+  // render, and had no way to be set — so every bar in the venue answered to
+  // "Bar Main" and Bar VIP never saw a ticket. The station now comes from the
+  // station the staff member claimed at sign-in.
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch('/api/rail?kind=bar', { cache: 'no-store' })
+      if (res.status === 401) { window.location.href = '/staff/login'; return }
+      const data = await res.json() as {
+        station?: string; orders?: RailOrder[]; no_shift?: boolean; error?: string
+      }
+      if (data.error) { setError(data.error); return }
+      setError('')
+      setStation(data.station ?? '')
+      setNoShift(!!data.no_shift)
+      setOrders(data.orders ?? [])
+    } catch {
+      setError('Lost the network. Showing the last known rail.')
+    }
+  }, [])
 
   useEffect(() => {
-    const t = setInterval(() => {
+    void load()
+    // A bar display is a wall-mounted screen nobody touches. Poll rather than
+    // hold a realtime socket open all night behind venue wifi that drops.
+    const poll = setInterval(() => void load(), 4000)
+    const tick = setInterval(() => {
       setClock(new Date().toLocaleTimeString('en-GH', { hour: '2-digit', minute: '2-digit' }))
     }, 1000)
-    return () => clearInterval(t)
-  }, [])
+    return () => { clearInterval(poll); clearInterval(tick) }
+  }, [load])
 
-  useEffect(() => {
-    const supabase = createSupabaseClient()
-
-    void supabase
-      .from('orders')
-      .select('id, created_at, station_label, venue_tables(label), order_items(id, product_name, quantity, status)')
-      .eq('status', 'paid')
-      .eq('station_label', STATION)
-      .order('created_at')
-      .then(({ data }) => {
-        if (data) setOrders(data.map(mapOrder))
-      })
-
-    const channel = supabase
-      .channel('bar-display')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'orders', filter: `station_label=eq.${STATION}` },
-        payload => {
-          const order = payload.new as Record<string, unknown>
-          if (order['status'] === 'paid') {
-            void supabase
-              .from('orders')
-              .select('id, created_at, station_label, venue_tables(label), order_items(id, product_name, quantity, status)')
-              .eq('id', order['id'])
-              .single()
-              .then(({ data }) => {
-                if (data) setOrders(prev => [...prev, mapOrder(data)])
-              })
-          }
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'order_items' },
-        payload => {
-          const item = payload.new as { id: string; status: string }
-          setOrders(prev => prev.map(o => ({
-            ...o,
-            items: o.items.map(i => i.id === item.id ? { ...i, status: item.status } : i),
-          })))
-        }
-      )
-      .subscribe()
-
-    return () => { void supabase.removeChannel(channel) }
-  }, [])
-
-  function mapOrder(data: Record<string, unknown>): OrderCard {
-    const venueTable = data['venue_tables'] as { label: string } | null
-    return {
-      id: data['id'] as string,
-      token: (data['id'] as string).slice(-4).toUpperCase(),
-      created_at: data['created_at'] as string,
-      station_label: data['station_label'] as string | null,
-      table_label: venueTable?.label ?? null,
-      items: ((data['order_items'] as OrderItem[] | null) ?? []),
+  async function advance(item: RailItem) {
+    const next = item.status === 'pending' ? 'preparing' : item.status === 'preparing' ? 'ready' : null
+    if (!next || busy) return
+    setBusy(item.id)
+    // Optimistic: a bartender with wet hands should not wait on a round trip.
+    setOrders(prev => prev.map(o => ({
+      ...o, items: o.items.map(i => i.id === item.id ? { ...i, status: next } : i),
+    })))
+    const res = await fetch('/api/orders/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_id: item.id, status: next }),
+    })
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({})) as { error?: string }
+      setError(d.error ?? 'Could not update that line.')
     }
+    setBusy(null)
+    void load()
   }
 
-  async function markItemReady(orderId: string, itemId: string) {
-    const supabase = createSupabaseClient()
-    await supabase
-      .from('order_items')
-      .update({ status: 'ready', ready_at: new Date().toISOString() })
-      .eq('id', itemId)
-  }
+  const label = (s: string) => (s === 'pending' ? 'Fire' : s === 'preparing' ? 'Pouring' : 'Up')
 
   return (
-    <FloorShell station={STATION} clock={clock}>
+    <FloorShell station={station || 'Bar'} clock={clock}>
+      {error && (
+        <p className="border-b border-ev-crimson/40 bg-ev-crimson/10 px-5 py-2 text-[12px] text-[#F0B7BF]">
+          {error}
+        </p>
+      )}
+
       <div className="p-4">
-        {orders.length === 0 && (
+        {noShift && (
+          <p className="mt-16 text-center text-[14px] text-[#8A8580]">
+            No shift is open. The rail starts when the manager opens the night.
+          </p>
+        )}
+
+        {!noShift && orders.length === 0 && (
           <p className="mt-16 text-center text-[14px] text-[#8A8580]">No tickets on the rail.</p>
         )}
+
         <div className="mx-auto grid max-w-6xl grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           {orders.map(order => {
-            const allReady = order.items.every(i => i.status === 'ready' || i.status === 'delivered')
-            const age = ageTone(order.created_at)
+            const live = order.items.filter(i => i.status !== 'delivered')
+            const allUp = live.length > 0 && live.every(i => i.status === 'ready')
+            const age = ageTone(order.since)
             return (
-              <div
+              <article
                 key={order.id}
                 className="border p-4"
-                style={{ borderColor: allReady ? '#1A5C2E' : '#2A242C', backgroundColor: '#100E14' }}
+                style={{
+                  borderColor: allUp ? '#1A5C2E' : age.late ? '#B8122A' : '#2A242C',
+                  backgroundColor: '#100E14',
+                }}
               >
                 <div className="mb-3 flex items-start justify-between">
                   <span className="font-display text-[48px] leading-none">{order.token}</span>
@@ -123,34 +123,36 @@ export default function BarDisplayPage() {
                 </div>
                 <p className="mb-3 text-[11px] uppercase tracking-[0.2em] text-[#8A8580]">
                   {order.table_label ?? order.station_label ?? 'Walk-up'}
+                  <span className="text-[#6B6570]"> · {order.guest_name}</span>
                 </p>
                 <div className="space-y-2">
-                  {order.items.map(item => (
-                    <button
-                      key={item.id}
-                      onClick={() => item.status === 'pending' || item.status === 'preparing'
-                        ? void markItemReady(order.id, item.id)
-                        : undefined
-                      }
-                      className="min-h-tap w-full border px-3 py-3 text-left"
-                      style={{
-                        borderColor: item.status === 'ready' || item.status === 'delivered' ? '#1A5C2E' : '#2A242C',
-                        color: item.status === 'ready' || item.status === 'delivered' ? '#7DCF8A' : '#F3EDE4',
-                      }}
-                    >
-                      <span className="font-bold">{item.quantity}\u00d7</span> {item.product_name}
-                      <span className="float-right text-[11px] uppercase tracking-[0.16em]">
-                        {item.status === 'ready' || item.status === 'delivered' ? 'Up' : 'Ready'}
-                      </span>
-                    </button>
-                  ))}
+                  {live.map(item => {
+                    const done = item.status === 'ready'
+                    return (
+                      <button
+                        key={item.id}
+                        onClick={() => void advance(item)}
+                        disabled={done || busy === item.id}
+                        className="min-h-tap w-full border px-3 py-3 text-left disabled:opacity-70"
+                        style={{
+                          borderColor: done ? '#1A5C2E' : '#2A242C',
+                          color: done ? '#7DCF8A' : '#F3EDE4',
+                        }}
+                      >
+                        <span className="font-bold">{item.quantity}×</span> {item.product_name}
+                        <span className="float-right text-[11px] uppercase tracking-[0.16em]">
+                          {label(item.status)}
+                        </span>
+                      </button>
+                    )
+                  })}
                 </div>
-                {allReady && (
-                  <div className="mt-3 text-center text-[11px] font-semibold uppercase tracking-[0.2em] text-[#7DCF8A]">
-                    All up
-                  </div>
+                {allUp && (
+                  <p className="mt-3 text-center text-[11px] font-semibold uppercase tracking-[0.2em] text-[#7DCF8A]">
+                    All up — call the runner
+                  </p>
                 )}
-              </div>
+              </article>
             )
           })}
         </div>

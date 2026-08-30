@@ -52,7 +52,7 @@ export default function EventsListPage() {
                     <p className="mt-2 line-clamp-2 text-[13px] text-[#8A8580]">{ev.description}</p>
                     <div className="mt-4 flex items-end justify-between">
                       <p className="text-[13px] uppercase tracking-[0.16em] text-ev-crimson">
-                        From {Number.isFinite(from) ? formatAmount(from) : '\u2014'}
+                        From {Number.isFinite(from) ? formatAmount(from) : '—'}
                       </p>
                       <p className="text-[11px] uppercase tracking-[0.16em] text-[#8A8580]">
                         {left} left
