@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { createSupabaseServiceRole } from '@/lib/supabase/server'
 import { issueTicketsFromCheckout } from '@/lib/issue-tickets'
+import { refundCheckout } from '@/lib/refund'
 import { webhookEventId } from '@/lib/runtime'
 
 function verify(raw: string, signature: string): boolean {
@@ -82,16 +83,62 @@ export async function POST(req: NextRequest) {
 
       await supabase.from('pending_checkouts').update({ status: 'paid' }).eq('id', checkout.id)
       try {
-        await issueTicketsFromCheckout(supabase, checkout, {
-          fee_pesewas: Number(payload.data.fees ?? 0) || 0,
-          method: String(payload.data.channel ?? ''),
-        })
+        if (checkout.use_installments) {
+          // Half now, the balance by 48 hours before doors. The tickets exist
+          // immediately but come out 'reserved', so they will not open the
+          // door until the plan completes.
+          await issueInstallmentFirstLeg(supabase, checkout, paidPesewas, Number(payload.data.fees ?? 0) || 0)
+        } else {
+          await issueTicketsFromCheckout(supabase, checkout, {
+            fee_pesewas: Number(payload.data.fees ?? 0) || 0,
+            method: String(payload.data.channel ?? ''),
+          })
+        }
       } catch (err) {
+        const message = err instanceof Error ? err.message : 'issue_failed'
+
+        // The one failure that is not ours to retry: the customer paid, and
+        // between the stock check at initiation and this webhook another buyer
+        // took the last seats. The club never oversells, so the money goes
+        // back rather than being held against a ticket that cannot exist.
+        if (message.includes('sold_out')) {
+          const outcome = await refundCheckout(
+            supabase,
+            checkout,
+            'sold out before payment cleared',
+          )
+          // Acknowledged either way: retrying the webhook cannot un-sell the
+          // seats, and a refund that failed is recorded for a human to chase.
+          return NextResponse.json({
+            ok: true,
+            sold_out: true,
+            refunded: outcome.refunded,
+            refund_error: outcome.error ?? null,
+          })
+        }
+
         await supabase.from('webhook_events').delete().eq('paystack_event_id', eventId)
-        return NextResponse.json(
-          { error: err instanceof Error ? err.message : 'issue_failed' },
-          { status: 500 },
-        )
+        return NextResponse.json({ error: message }, { status: 500 })
+      }
+    }
+
+    // The second leg of an installment plan, keyed by its own reference.
+    const { data: plannedCheckout } = await supabase
+      .from('pending_checkouts')
+      .select('id, amount_pesewas, status')
+      .eq('balance_ref', ref)
+      .maybeSingle()
+
+    if (plannedCheckout && plannedCheckout.status === 'part_paid') {
+      const { error: balErr } = await supabase.rpc('complete_installment_balance', {
+        p_checkout_id: plannedCheckout.id,
+        p_paid_pesewas: paidPesewas,
+        p_fee_pesewas: Number(payload.data.fees ?? 0) || 0,
+        p_paystack_ref: ref,
+      })
+      if (balErr) {
+        await supabase.from('webhook_events').delete().eq('paystack_event_id', eventId)
+        return NextResponse.json({ error: balErr.message }, { status: 500 })
       }
     }
 
@@ -115,11 +162,82 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const { data: resv } = await supabase.from('table_reservations').select('id').eq('paystack_ref', ref).maybeSingle()
+    // A table deposit. The old branch flipped two columns and booked nothing,
+    // so the money the club was holding never appeared anywhere.
+    const { data: resv } = await supabase
+      .from('table_reservations')
+      .select('id')
+      .eq('paystack_ref', ref)
+      .maybeSingle()
     if (resv) {
-      await supabase.from('table_reservations').update({ status: 'confirmed', deposit_paid_at: new Date().toISOString() }).eq('id', resv.id)
+      const { error: depErr } = await supabase.rpc('confirm_reservation_deposit', {
+        p_reservation_id: resv.id,
+        p_paid_pesewas: paidPesewas,
+        p_paystack_ref: ref,
+      })
+      if (depErr) {
+        await supabase.from('webhook_events').delete().eq('paystack_event_id', eventId)
+        return NextResponse.json({ error: depErr.message }, { status: 500 })
+      }
+    }
+  }
+
+  // Paystack acknowledges a refund request immediately and confirms it has
+  // settled later. settle_checkout_refund is idempotent, so this only closes
+  // out a refund whose request-time write did not land.
+  if ((payload.event === 'refund.processed' || payload.event === 'refund.failed') && payload.data) {
+    const originalRef = String(
+      (payload.data['transaction_reference'] as string | undefined) ??
+      ((payload.data['transaction'] as Record<string, unknown> | undefined)?.['reference'] as string | undefined) ??
+      '',
+    )
+    if (originalRef) {
+      const { data: co } = await supabase
+        .from('pending_checkouts')
+        .select('id')
+        .eq('paystack_ref', originalRef)
+        .maybeSingle()
+      if (co) {
+        await supabase.rpc('settle_checkout_refund', {
+          p_checkout_id: co.id,
+          p_ok: payload.event === 'refund.processed',
+          p_fee_kept_pesewas: 0,
+          p_error: payload.event === 'refund.failed' ? 'paystack reported refund.failed' : null,
+        })
+      }
     }
   }
 
   return NextResponse.json({ ok: true })
+}
+
+/**
+ * First installment leg. Mirrors issueTicketsFromCheckout's bundle building —
+ * the TOTP secret and the access-token hash are generated here in Node and
+ * only their encrypted / hashed forms reach the database.
+ */
+async function issueInstallmentFirstLeg(
+  supabase: ReturnType<typeof createSupabaseServiceRole>,
+  checkout: { id: string; quantity: number; amount_pesewas: number; paystack_ref: string },
+  paidPesewas: number,
+  feePesewas: number,
+) {
+  const { encodeTotpSecret, randomToken, sha256Hex } = await import('@evolveit/shared/crypto')
+  const OTPAuth = await import('otpauth')
+
+  const tokens = Array.from({ length: checkout.quantity }, () => randomToken(18))
+  const bundle = tokens.map((token, i) => ({
+    totp_enc: encodeTotpSecret(new OTPAuth.Secret({ size: 20 }).base32),
+    access_hash: sha256Hex(token),
+    fee_pesewas: i === 0 ? feePesewas : 0,
+    method: 'momo',
+    paystack_ref: `${checkout.paystack_ref}-${i + 1}`,
+  }))
+
+  const { error } = await supabase.rpc('complete_installment_checkout', {
+    p_checkout_id: checkout.id,
+    p_tickets: bundle,
+    p_paid_pesewas: paidPesewas,
+  })
+  if (error) throw new Error(error.message)
 }

@@ -1,10 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { Wordmark } from '@/components/Wordmark'
 
-export default function CheckoutReturnPage() {
+function CheckoutReturnPageInner() {
   const params = useSearchParams()
   const router = useRouter()
   const ref = params.get('ref')
@@ -137,5 +138,23 @@ export default function CheckoutReturnPage() {
         )}
       </div>
     </main>
+  )
+}
+
+/**
+ * useSearchParams() opts the tree into client-side rendering, and Next refuses
+ * to prerender it without a boundary. The build has never run in this repo —
+ * next.config.ts is not a format Next 14 loads, so `next build` failed before
+ * it got here — which is why this was never caught.
+ */
+export default function CheckoutReturnPage() {
+  return (
+    <Suspense fallback={
+      <main className="flex min-h-screen items-center justify-center bg-[#08070D]">
+        <p className="text-[11px] uppercase tracking-[0.24em] text-[#8A8580]">The till</p>
+      </main>
+    }>
+      <CheckoutReturnPageInner />
+    </Suspense>
   )
 }

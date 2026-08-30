@@ -23,6 +23,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Type-check every workspace
         run: pnpm -r --filter './apps/*' exec tsc --noEmit
+      - name: Build the web app
+        run: pnpm --filter @evolveit/web build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-placeholder
+          SUPABASE_SERVICE_ROLE_KEY: ci-placeholder
+          EVOLVEIT_DEMO: '1'
 
   shared:
     runs-on: ubuntu-latest
@@ -81,8 +88,24 @@ jobs:
             $PSQL -q -d memories -f "$f"
           done
 
-      - name: Seed and assert the demo night
-        run: $PSQL -d memories -f supabase/seed/demo_night.sql
+      # Run against a clean book, before the demo night, so the assertions
+      # about balances and stock are not reading someone else's numbers.
+      - name: Money-path integration tests
+        run: $PSQL -d memories -f supabase/tests/money_paths.sql
+
+      - name: Reset and seed the demo night
+        run: |
+          $PSQL -d postgres -c "DROP DATABASE memories WITH (FORCE);"
+          $PSQL -d postgres -c "CREATE DATABASE memories;"
+          $PSQL -d memories <<'SQL'
+          CREATE SCHEMA auth;
+          CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS
+            $$ SELECT nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
+          CREATE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS
+            $$ SELECT coalesce(nullif(current_setting('request.jwt.claim.role', true), ''), 'anon') $$;
+          SQL
+          for f in supabase/migrations/*.sql; do $PSQL -q -d memories -f "$f"; done
+          $PSQL -d memories -f supabase/seed/demo_night.sql
 
       - name: The browser key must not reach the money
         run: |
@@ -97,6 +120,8 @@ jobs:
           check "SELECT count(*) FROM payroll_lines;"
           check "SELECT count(*) FROM shift_handovers;"
           check "SELECT count(*) FROM staff_login_attempts;"
+          check "SELECT count(*) FROM notification_outbox;"
+          check "SELECT count(*) FROM payment_plans;"
           check "SELECT get_night_dashboard('d0000000-0000-4000-8000-00000000000f');"
           check "SELECT get_waiter_cash_summary('d0000000-0000-4000-8000-00000000000f');"
           check "SELECT get_shift_revenue('d0000000-0000-4000-8000-00000000000f');"

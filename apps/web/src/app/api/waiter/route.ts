@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server'
 import { createSupabaseServiceRole } from '@/lib/supabase/server'
 import { getStaffSession } from '@/lib/staff-session'
 
+// A server's live section. Never prerendered, never cached.
+export const dynamic = 'force-dynamic'
+
 /**
  * A server's own night: the tables they are running, what is still to come out
  * of the bar, and how much of the club's cash is currently in their apron.

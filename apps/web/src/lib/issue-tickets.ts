@@ -1,9 +1,18 @@
 import { encodeTotpSecret, randomToken, sha256Hex } from '@evolveit/shared/crypto'
 import { splitPesewas } from '@evolveit/shared/money'
 import * as OTPAuth from 'otpauth'
+import { enqueue, ticketDeepLink } from './outbox'
 
 type ServiceClient = {
   rpc: (fn: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: { message: string } | null }>
+  from: (table: string) => {
+    insert: (rows: unknown) => Promise<{ error: { message: string; code?: string } | null }>
+    select: (cols: string) => {
+      eq: (col: string, val: unknown) => {
+        maybeSingle: () => Promise<{ data: Record<string, unknown> | null }>
+      }
+    }
+  }
 }
 
 function paymentMethod(raw?: string): 'momo' | 'card' | 'ussd' {
@@ -15,9 +24,13 @@ export async function issueTicketsFromCheckout(
   supabase: ServiceClient,
   checkout: {
     id: string
+    tenant_id?: string
+    event_id?: string
     quantity: number
     amount_pesewas: number
     paystack_ref: string
+    buyer_name?: string
+    buyer_phone?: string
   },
   opts?: { fee_pesewas?: number; method?: string },
 ): Promise<{ ticket_ids: string[]; access_tokens: string[]; already: boolean }> {
@@ -47,9 +60,61 @@ export async function issueTicketsFromCheckout(
   }
 
   const result = data as { ok?: boolean; already?: boolean; ticket_ids?: string[] }
+  const ticketIds = result.ticket_ids ?? []
+
+  // Hand the buyer their ticket. This is the only moment the raw access token
+  // exists — the database stores only its hash — so if the link is not put in
+  // front of the customer here, it cannot be reconstructed later.
+  if (!result.already && checkout.tenant_id && checkout.buyer_phone) {
+    await queueTicketDelivery(supabase, checkout, ticketIds, accessTokens)
+  }
+
   return {
-    ticket_ids: result.ticket_ids ?? [],
+    ticket_ids: ticketIds,
     access_tokens: result.already ? [] : accessTokens,
     already: !!result.already,
   }
+}
+
+async function queueTicketDelivery(
+  supabase: ServiceClient,
+  checkout: {
+    id: string
+    tenant_id?: string
+    event_id?: string
+    paystack_ref: string
+    buyer_name?: string
+    buyer_phone?: string
+  },
+  ticketIds: string[],
+  accessTokens: string[],
+): Promise<void> {
+  let eventName = 'Memories Night Club'
+  let eventDate = ''
+  if (checkout.event_id) {
+    const { data: event } = await supabase
+      .from('events').select('name, starts_at').eq('id', checkout.event_id).maybeSingle()
+    if (event) {
+      eventName = String(event['name'] ?? eventName)
+      eventDate = new Date(String(event['starts_at'])).toLocaleString('en-GH', {
+        weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+      })
+    }
+  }
+
+  // One message per ticket, so a buyer who bought four can forward one link
+  // each rather than walking four people in from one phone.
+  await enqueue(supabase, ticketIds.map((id, i) => ({
+    tenant_id: checkout.tenant_id!,
+    kind: 'ticket_delivery' as const,
+    to_phone: checkout.buyer_phone!,
+    payload: {
+      buyer_name: checkout.buyer_name ?? 'Guest',
+      event_name: eventName,
+      event_date: eventDate,
+      serial: '',
+      deep_link: ticketDeepLink(id, accessTokens[i] ?? ''),
+    },
+    dedupe_key: `ticket:${id}`,
+  })))
 }
