@@ -13,6 +13,9 @@ export default function CheckoutReturnPage() {
     ? 'MoMo is confirmed on this demo rail. Press to print the door pass.'
     : 'Waiting for MoMo. Do not close this page.')
   const [busy, setBusy] = useState(false)
+  const [stage, setStage] = useState<'waiting' | 'claim' | 'failed'>(demo ? 'claim' : 'waiting')
+  const [phone, setPhone] = useState('')
+  const [err, setErr] = useState('')
 
   async function confirmDemo() {
     setBusy(true)
@@ -33,18 +36,57 @@ export default function CheckoutReturnPage() {
     }
   }
 
+  // The live rail used to poll until the tickets existed, set a hopeful
+  // message and stop — the buyer never reached their pass. The raw access
+  // token only ever exists in the process that issued the tickets, and when
+  // the webhook issues them that is not this browser, so the buyer claims a
+  // fresh grant with the reference plus the number they bought under.
   useEffect(() => {
     if (!ref || demo) return
+    let cancelled = false
     const t = setInterval(async () => {
       const res = await fetch(`/api/tickets/status?ref=${ref}`)
-      const data = await res.json() as { issued?: boolean; ticket_ids?: string[] }
+      const data = await res.json() as { issued?: boolean; failed?: boolean; ticket_ids?: string[] }
+      if (cancelled) return
+      if (data.failed) {
+        clearInterval(t)
+        setStage('failed')
+        setMsg('That charge did not complete. Nothing has been taken — if money left your wallet, show this page at the door.')
+        return
+      }
       if (data.issued && data.ticket_ids?.[0]) {
         clearInterval(t)
-        setMsg('Your night is ready.')
+        setStage('claim')
+        setMsg('Paid. Confirm the number you bought under and we will open your pass.')
       }
     }, 2000)
-    return () => clearInterval(t)
+    return () => { cancelled = true; clearInterval(t) }
   }, [ref, demo])
+
+  async function claim() {
+    setBusy(true)
+    setErr('')
+    const res = await fetch('/api/tickets/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reference: ref, phone }),
+    })
+    const data = await res.json() as {
+      tickets?: Array<{ id: string; access: string }>; error?: string
+    }
+    if (!res.ok || !data.tickets?.[0]) {
+      setErr(data.error ?? 'Could not open that pass.')
+      setBusy(false)
+      return
+    }
+    // Keep every pass in the batch, so a buyer who bought four can walk four
+    // people in from one phone.
+    for (const t of data.tickets) {
+      sessionStorage.setItem(`ticket-access-${t.id}`, t.access)
+    }
+    const first = data.tickets[0]!
+    router.push(`/tickets/${first.id}?access=${first.access}`)
+  }
 
   return (
     <main className="relative min-h-screen overflow-hidden" data-tenant="memories-nc">
@@ -62,6 +104,36 @@ export default function CheckoutReturnPage() {
           >
             {busy ? 'Printing…' : 'Confirm MoMo'}
           </button>
+        )}
+
+        {!demo && stage === 'waiting' && (
+          <div className="mt-8 h-[2px] w-40 overflow-hidden bg-[#2A242C]">
+            <div className="h-full w-1/3 animate-pulse bg-ev-crimson" />
+          </div>
+        )}
+
+        {!demo && stage === 'claim' && (
+          <div className="mt-8 w-full max-w-xs">
+            <input
+              type="tel"
+              inputMode="tel"
+              value={phone}
+              onChange={e => setPhone(e.target.value)}
+              placeholder="024 412 3456"
+              className="h-14 w-full border border-[#2A242C] bg-[#100E14] px-4 text-center text-[16px] text-[#F3EDE4] placeholder:text-[#6B6570] focus:outline-none"
+            />
+            {err && <p className="mt-3 text-[13px] text-ev-crimson">{err}</p>}
+            <button
+              disabled={busy || phone.length < 9}
+              onClick={() => void claim()}
+              className="mt-3 h-14 w-full bg-ev-crimson text-[13px] font-semibold uppercase tracking-[0.2em] text-white disabled:opacity-30"
+            >
+              {busy ? 'Opening…' : 'Open my pass'}
+            </button>
+            <p className="mt-4 text-[12px] leading-relaxed text-[#6B6570]">
+              Keep this link. It is how you get back to your pass on the night.
+            </p>
+          </div>
         )}
       </div>
     </main>

@@ -1018,3 +1018,62 @@ BEGIN
 END; $$;
 REVOKE ALL ON FUNCTION staff_login_lockout(text, text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION staff_login_lockout(text, text) TO service_role;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 13. A buyer can get back to the ticket they paid for
+-- ─────────────────────────────────────────────────────────────────────────────
+-- On the live rail the buyer received nothing. The access token is generated
+-- in Node at issuance and only its sha256 is stored, so when the webhook mints
+-- the tickets server-side the raw token exists nowhere the browser can reach —
+-- and the return page's poll never navigated anywhere. Combined with
+-- sendTicketDelivery() having no callers anywhere in the repo, a customer who
+-- paid on the live rail got no ticket in the browser, no WhatsApp and no SMS.
+--
+-- This re-issues an access grant to someone who can present both the checkout
+-- reference (24 random hex characters, handed only to the buyer) and the phone
+-- number the ticket was bought against.
+CREATE OR REPLACE FUNCTION claim_ticket_access(
+  p_paystack_ref text,
+  p_phone text,
+  p_grants jsonb          -- [{ticket_id, access_hash}, …]
+) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_co pending_checkouts;
+  v_item jsonb;
+  v_ids uuid[];
+BEGIN
+  SELECT * INTO v_co FROM pending_checkouts WHERE paystack_ref = p_paystack_ref;
+  IF NOT FOUND OR v_co.status <> 'issued' THEN
+    RETURN jsonb_build_object('ok', false, 'reason', 'not_issued');
+  END IF;
+  IF v_co.buyer_phone IS DISTINCT FROM p_phone THEN
+    RETURN jsonb_build_object('ok', false, 'reason', 'phone_mismatch');
+  END IF;
+
+  SELECT array_agg(p.ticket_id ORDER BY p.created_at) INTO v_ids
+    FROM ticket_payments p
+   WHERE p.paystack_ref LIKE p_paystack_ref || '-%';
+
+  IF v_ids IS NULL OR array_length(v_ids, 1) IS DISTINCT FROM jsonb_array_length(p_grants) THEN
+    RETURN jsonb_build_object('ok', false, 'reason', 'grant_count_mismatch');
+  END IF;
+
+  FOR v_item IN SELECT * FROM jsonb_array_elements(p_grants)
+  LOOP
+    IF NOT ((v_item->>'ticket_id')::uuid = ANY (v_ids)) THEN
+      RETURN jsonb_build_object('ok', false, 'reason', 'unknown_ticket');
+    END IF;
+    -- Replacing the grant invalidates any previous link, so a claim from a new
+    -- device retires the old one rather than leaving both live.
+    UPDATE ticket_access
+       SET token_hash = v_item->>'access_hash', created_at = now()
+     WHERE ticket_id = (v_item->>'ticket_id')::uuid;
+  END LOOP;
+
+  RETURN jsonb_build_object('ok', true, 'ticket_ids', to_jsonb(v_ids));
+END; $$;
+REVOKE ALL ON FUNCTION claim_ticket_access(text, text, jsonb) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION claim_ticket_access(text, text, jsonb) TO service_role;
