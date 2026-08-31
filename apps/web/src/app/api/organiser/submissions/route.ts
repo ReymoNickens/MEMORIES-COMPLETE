@@ -17,6 +17,11 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   const staff = await getStaffSession()
   if (!staff) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+  // Without this, any signed-in staff member — a bartender, a door person —
+  // could file an event proposal attributed to themselves. Only the roles the
+  // pipeline is actually meant for may submit one.
+  const canSubmit = staff.roles.some(r => ['organiser', 'owner', 'manager'].includes(r))
+  if (!canSubmit) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const body = await req.json().catch(() => null) as Record<string, unknown> | null
   if (!body?.event_name || !body?.preferred_date || !body?.description) {
     return NextResponse.json({ error: 'missing fields' }, { status: 400 })

@@ -19,6 +19,20 @@ if (!HUB_SECRET) {
   throw new Error('HUB_SECRET is required')
 }
 
+// The sync loop reads these lazily inside a try/catch in sync.ts, so a
+// missing key does not crash the process — it fails the same generic way
+// every sync attempt, quietly, all night, until someone thinks to check the
+// logs. Checking at boot turns that into one clear message before the door
+// opens, when someone is actually looking at the terminal.
+for (const name of ['SUPABASE_SERVICE_ROLE_KEY']) {
+  if (!process.env[name]) {
+    throw new Error(`${name} is required — the hub cannot sync tickets without it`)
+  }
+}
+if (!process.env['SUPABASE_URL'] && !process.env['NEXT_PUBLIC_SUPABASE_URL']) {
+  throw new Error('SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) is required')
+}
+
 function safeEqual(a: string, b: string): boolean {
   const left = Buffer.from(a)
   const right = Buffer.from(b)
@@ -183,7 +197,7 @@ app.post('/v1/notify', (req, res) => {
 })
 
 // ── Start server ──────────────────────────────────────────────────────────────
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Hub listening on port ${PORT}`)
 
   // Initial sync on startup
@@ -196,3 +210,34 @@ app.listen(PORT, '0.0.0.0', () => {
     void syncUp().catch(err => console.error('Sync up failed:', (err as Error).message))
   }, interval)
 })
+
+// ── Graceful shutdown ────────────────────────────────────────────────────────
+// The hub is the door's offline safety net — the one thing that must not lose
+// data. better-sqlite3's WAL mode buffers writes in a separate -wal file that
+// only gets folded into hub.db on a clean checkpoint. An unhandled SIGTERM
+// (a redeploy, a reboot, `docker stop`) kills the process mid-write with no
+// chance to do that, risking a lost redemption or a corrupt file exactly when
+// the hub exists to prevent that outcome. A force-exit timer keeps a genuinely
+// wedged shutdown from hanging the container forever.
+function shutdown(signal: string) {
+  console.log(`${signal} received, checkpointing and closing`)
+  const forceExit = setTimeout(() => {
+    console.error('Shutdown did not complete in time — forcing exit')
+    process.exit(1)
+  }, 10_000)
+  forceExit.unref()
+
+  server.close(() => {
+    try {
+      db.pragma('wal_checkpoint(TRUNCATE)')
+      db.close()
+    } catch (err) {
+      console.error('Error during shutdown checkpoint:', (err as Error).message)
+    }
+    clearTimeout(forceExit)
+    process.exit(0)
+  })
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))

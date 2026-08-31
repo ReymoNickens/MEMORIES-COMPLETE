@@ -123,9 +123,21 @@ export async function POST(req: NextRequest) {
   }
 
   if (demoPaymentsAllowed() && !paystackLive()) {
+    // Tickets have a customer-facing "Confirm MoMo" step because a buyer must
+    // supply the phone the tickets were bought under before claiming them.
+    // An order has no such handshake — there is nothing left to confirm — so
+    // the demo rail marks it paid immediately rather than leaving it stuck at
+    // pending_payment with no path that ever completes it, demo or otherwise.
+    const { error: demoPayErr } = await supabase.rpc('mark_order_paid', {
+      p_order_id: placed.order_id,
+      p_fee_pesewas: 0,
+    })
+    if (demoPayErr) {
+      return NextResponse.json(makeError(ErrorCodes.PAYMENT_FAILED, demoPayErr.message), { status: 500 })
+    }
     return NextResponse.json({
       order_id: placed.order_id,
-      authorization_url: `/checkout/return?ref=${paystackRef}&demo=1`,
+      authorization_url: `/order/return?ref=${paystackRef}&demo=1`,
       reference: paystackRef,
       demo: true,
     })
@@ -142,7 +154,7 @@ export async function POST(req: NextRequest) {
       amount: placed.amount_pesewas,
       currency: 'GHS',
       reference: paystackRef,
-      callback_url: `${process.env['NEXT_PUBLIC_APP_URL']}/checkout/return?ref=${paystackRef}`,
+      callback_url: `${process.env['NEXT_PUBLIC_APP_URL']}/order/return?ref=${paystackRef}`,
       metadata: { context: 'order', order_id: placed.order_id },
     }),
   })

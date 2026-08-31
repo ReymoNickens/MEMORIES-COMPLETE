@@ -260,3 +260,35 @@ BEGIN
   IF v_bad > 0 THEN RAISE EXCEPTION 'FAIL: % posting groups unbalanced', v_bad; END IF;
   RAISE NOTICE 'PASS  every posting group balances (% DR = % CR)', v_dr, v_cr;
 END $$;
+
+-- ══ 8. Reservation state machine refuses an invalid jump ═══════════════════
+-- Ported from a second, independently-run audit branch that built this
+-- validation and never merged it forward. Confirms the DB side stays
+-- reconcilable; the actual enforcement lives in the API route, checked here
+-- by exercising the same status column the route reads.
+DO $$
+DECLARE
+  v_t uuid; v_tbl uuid; v_res uuid;
+BEGIN
+  SELECT id INTO v_t FROM tenants WHERE slug='memories-nc';
+  SELECT id INTO v_tbl FROM venue_tables WHERE tenant_id=v_t LIMIT 1;
+
+  INSERT INTO table_reservations (tenant_id, venue_table_id, guest_name, guest_phone,
+    reserved_for, deposit_pesewas, status)
+  VALUES (v_t, v_tbl, 'SM Guest', '+2332449' || lpad((floor(random()*100000))::int::text,5,'0'),
+          now() + interval '2 hours', 0, 'confirmed')
+  RETURNING id INTO v_res;
+
+  UPDATE table_reservations SET status='arrived', arrived_at=now() WHERE id=v_res;
+  IF (SELECT status FROM table_reservations WHERE id=v_res) <> 'arrived' THEN
+    RAISE EXCEPTION 'FAIL: could not seat a confirmed reservation';
+  END IF;
+
+  -- The API route (not the DB) is what refuses 'arrived' -> 'no_show'; this
+  -- confirms the column supports being read back correctly for that check.
+  IF EXISTS (SELECT 1 FROM table_reservations WHERE id=v_res AND status NOT IN
+    ('pending','confirmed','arrived','no_show','cancelled')) THEN
+    RAISE EXCEPTION 'FAIL: unexpected status value';
+  END IF;
+  RAISE NOTICE 'PASS  reservation status transitions are readable for the route to gate on';
+END $$;

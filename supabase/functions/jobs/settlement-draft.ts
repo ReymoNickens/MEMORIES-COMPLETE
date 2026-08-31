@@ -32,14 +32,22 @@ Deno.serve(async (req) => {
 
     if (existing) continue
 
-    // Get organiser from submission
-    const { data: submission } = await supabase
+    // Get organiser from submission. `.single()` throws when a query matches
+    // zero OR more than one row — and nothing stops an event ending up with
+    // two 'approved' submissions (an amendment re-approved without the first
+    // being superseded). When that happens .single() errors, the code never
+    // checks that error, and `if (!submission) continue` quietly skips this
+    // event's settlement forever: no draft, no payout, no record of why. The
+    // most recently approved submission is authoritative here.
+    const { data: submissions } = await supabase
       .from('organiser_submissions')
       .select('organiser_id, comp_allowance')
       .eq('event_id', event.id)
       .eq('status', 'approved')
-      .single()
+      .order('reviewed_at', { ascending: false })
+      .limit(1)
 
+    const submission = submissions?.[0]
     if (!submission) continue
 
     // Compute settlement

@@ -119,6 +119,19 @@ export async function POST(req: NextRequest) {
   })
 }
 
+// A reservation's whole point is the state it's in: 'arrived' and 'no_show'
+// are mutually exclusive facts about the same table, and both are terminal.
+// Without validating the transition, nothing stopped a seated guest being
+// flipped to no_show — forfeiting their deposit while they are sitting at
+// the table — or a cancelled hold being resurrected into 'arrived'.
+const RESERVATION_TRANSITIONS: Record<string, string[]> = {
+  pending:   ['confirmed', 'cancelled'],
+  confirmed: ['arrived', 'no_show', 'cancelled'],
+  arrived:   [],
+  no_show:   [],
+  cancelled: [],
+}
+
 export async function PATCH(req: NextRequest) {
   const staff = await getStaffSession()
   if (!staff) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
@@ -132,11 +145,19 @@ export async function PATCH(req: NextRequest) {
   // Scope to the tenant before acting on it.
   const { data: existing } = await supabase
     .from('table_reservations')
-    .select('id')
+    .select('id, status')
     .eq('id', body.id)
     .eq('tenant_id', staff.tenant_id)
     .maybeSingle()
   if (!existing) return NextResponse.json({ error: 'not found' }, { status: 404 })
+
+  const validNext = RESERVATION_TRANSITIONS[existing.status as string] ?? []
+  if (!validNext.includes(body.status!)) {
+    return NextResponse.json(
+      { error: `Cannot move a ${existing.status} reservation to ${body.status}.` },
+      { status: 409 },
+    )
+  }
 
   // A no-show forfeits the deposit, which is a transfer out of the liability
   // the club is holding — not a status flag. Marking it by hand from the floor

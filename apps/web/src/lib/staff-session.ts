@@ -1,6 +1,7 @@
 import { cookies } from 'next/headers'
 import { signPayload, verifySignedPayload } from '@evolveit/shared/crypto'
 import type { StaffRole } from '@evolveit/shared/types'
+import { createSupabaseServiceRole } from '@/lib/supabase/server'
 
 export interface StaffSession {
   user_id: string
@@ -52,7 +53,24 @@ export async function getStaffSession(): Promise<StaffSession | null> {
   const jar = await cookies()
   const token = jar.get(COOKIE)?.value
   if (!token) return null
-  return decodeStaffSession(token)
+  const session = decodeStaffSession(token)
+  if (!session) return null
+
+  // A signed, unexpired cookie is only proof of who signed in up to 12 hours
+  // ago — not that the account is still live now. Without this, deactivating
+  // a fired staff member or one whose PIN leaked does nothing until their
+  // cookie happens to expire on its own. One indexed lookup on the primary
+  // key, on every request that already needs a DB round trip anyway.
+  const supabase = createSupabaseServiceRole()
+  const { data: user } = await supabase
+    .from('users')
+    .select('is_active')
+    .eq('id', session.user_id)
+    .eq('tenant_id', session.tenant_id)
+    .maybeSingle()
+  if (!user?.is_active) return null
+
+  return session
 }
 
 export function staffCookieHeader(session: Omit<StaffSession, 'iat' | 'exp'>): string {

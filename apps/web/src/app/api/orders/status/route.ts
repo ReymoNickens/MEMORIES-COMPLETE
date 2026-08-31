@@ -2,6 +2,42 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServiceRole } from '@/lib/supabase/server'
 import { getStaffSession } from '@/lib/staff-session'
 
+/**
+ * Public order lookup by Paystack reference, for the guest confirmation page.
+ *
+ * Mirrors /api/tickets/status: a guest holds an unguessable reference from
+ * their own callback URL, and that is the whole access control — the same
+ * pattern used everywhere else a customer needs to check on their own money
+ * without a login. Before this existed, orders/initiate sent every MoMo payer
+ * to /checkout/return, which only ever looks up pending_checkouts — an F&B
+ * order's reference lives on `orders`, so that lookup always came back empty
+ * and a guest who had genuinely paid never found out.
+ */
+export async function GET(req: NextRequest) {
+  const ref = req.nextUrl.searchParams.get('ref')
+  if (!ref) return NextResponse.json({ confirmed: false, error: 'ref required' }, { status: 400 })
+
+  const supabase = createSupabaseServiceRole()
+  const { data: order } = await supabase
+    .from('orders')
+    .select('id, status, amount_pesewas, venue_tables(label)')
+    .eq('paystack_ref', ref)
+    .maybeSingle()
+
+  if (!order) return NextResponse.json({ confirmed: false })
+
+  const table = order.venue_tables as { label: string } | null
+  const confirmed = ['paid', 'preparing', 'complete'].includes(order.status as string)
+
+  return NextResponse.json({
+    confirmed,
+    order_id: order.id,
+    status: order.status,
+    amount_pesewas: order.amount_pesewas,
+    table_label: table?.label ?? null,
+  })
+}
+
 const FORWARD: Record<string, string[]> = {
   pending:   ['preparing', 'ready'],
   preparing: ['ready'],

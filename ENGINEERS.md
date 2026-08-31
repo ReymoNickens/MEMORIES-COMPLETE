@@ -5,10 +5,11 @@ the Paystack key is not `sk_live`.
 
 ## Apply before first live charge
 
-1. Run Supabase migrations `001` through `018` in order. `017` and `018` are the
-   audit passes and are **not optional** — it enables RLS on the payroll and
-   stock tables, revokes the financial RPCs from the browser key, stamps every
-   posting with its shift, and adds the ledger balance constraint.
+1. Run Supabase migrations `001` through `019` in order. `017`, `018` and `019`
+   are the audit passes and are **not optional** — between them they enable
+   RLS on the payroll and stock tables, revoke the financial RPCs from the
+   browser key, stamp every posting with its shift, add the ledger balance
+   constraint, and index the door's hottest query.
 2. Generate secrets (do not commit):
 
 ```
@@ -137,6 +138,74 @@ any public deploy — they are sha256 with no pepper.
   build had never succeeded and `transpilePackages` had never been applied.
   The config is `next.config.mjs`.
 - `packages/ui` is gone. Nothing imported it and it carried a third palette.
+
+## Branch reconciliation, 31 Aug 2026
+
+A second audit had been run independently on this codebase, on a branch
+(`claude/continue-previous-ds4ie6`) that forked before migration 010 and never
+merged forward. Most of its findings were already fixed here, differently and
+more completely, by the time it was reviewed — real-time ticket issuance,
+device authentication, TOTP encryption, and PIN throttling were all already
+stronger on this line. The genuinely new, non-overlapping items were ported:
+
+- **F&B MoMo orders had no working return path.** `orders/initiate` sent every
+  MoMo payer to `/checkout/return`, which only ever checks `pending_checkouts`
+  — an order's reference lives on `orders`. A guest who paid for a round at
+  the bar sat on "Waiting for MoMo" forever. Fixed with a dedicated
+  `/order/return` page and a `GET` on `/api/orders/status`. The same gap
+  existed in demo mode from a different angle — nothing ever marked a demo
+  F&B order paid — fixed alongside it.
+- **A deactivated staff member's session stayed valid until it expired.**
+  `getStaffSession()` verified the cookie's signature and expiry but never
+  checked `users.is_active`. Fired staff or a compromised PIN now loses access
+  immediately, not up to 12 hours later.
+- **The hub had no startup validation or graceful shutdown.** A missing
+  `SUPABASE_SERVICE_ROLE_KEY` failed confusingly on the first sync attempt
+  instead of at boot; a `SIGTERM` (redeploy, reboot) could kill the process
+  mid-write with the WAL never checkpointed — a real corruption risk for the
+  one system that exists to survive the venue link going down.
+- **Hub ticket sync filtered on `starts_at`**, an approximation, instead of
+  `check_in_from`/`check_in_until`, the columns the schema defines specifically
+  for the admission window.
+- **A malformed ciphertext could 500 the door.** `decodeTotpSecret` in the
+  redeem route wasn't wrapped — one corrupted row would throw instead of
+  failing as a bad code for that one ticket.
+- **Reservations had no state-machine validation.** Nothing stopped a seated
+  guest (`arrived`) being flipped to `no_show`, forfeiting their deposit while
+  they sat at the table.
+- **`organiser/submissions` `POST` had no role check** — any signed-in staff
+  member could file an event proposal.
+- **`settlement-draft.ts` could silently skip an event forever.** `.single()`
+  on `organiser_submissions` throws when a query matches more than one row,
+  and nothing stops two `approved` submissions landing on the same event; the
+  error was never checked, so the job just moved on with no settlement drafted
+  and no record of why.
+- **`devices.key_hash` had no index**, despite being the predicate on the
+  door's single hottest query.
+- A presence-only `middleware.ts` now redirects a signed-out visitor before
+  the page shell renders for `/dashboard`, `/bar`, `/kitchen`, `/floor`,
+  `/waiter`, `/organiser`, `/reissue`, `/staff/claim`. It checks only that the
+  cookie exists — the actual signature verification needs `node:crypto`, which
+  does not run in Next 14's Edge Middleware runtime (confirmed by trying: the
+  build fails outright). Every route still calls `getStaffSession()` and
+  re-verifies fully server-side; a forged cookie passes the middleware and is
+  still correctly rejected there. The other branch's middleware imported the
+  signing code directly and would have failed to build the first time anyone
+  tried.
+- 7 new unit tests (QR payload negative cases, phone/money edge cases, signed
+  payload mutation, cross-key decrypt failure) and one new integration test
+  (reservation status transitions), closing coverage gaps the other branch
+  had found but never landed in a form trunk's test runner could use.
+
+Declined, with reason: PBKDF2 for PINs (trunk's scrypt is already stronger,
+swapping would just be churn plus a rehash migration), HMAC-keyed device
+hashes (real device keys are 256-bit random per the provisioning instructions
+above — a keyed HMAC only helps if an operator sets a weak one, and the
+migration cost wasn't worth that marginal case), hub SSE client capping and
+heartbeat (nothing in the current system consumes that endpoint — `/api/rail`
+polling replaced it — so it's fixing dead code), and a device-registration API
+(bigger scope than a reconciliation pass; still manual per the provisioning
+note above).
 
 ## CI
 

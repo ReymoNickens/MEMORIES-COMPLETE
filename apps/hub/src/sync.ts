@@ -17,16 +17,22 @@ export async function syncDown(): Promise<void> {
   // pulled every issued ticket the club had ever sold. Filter on the events
   // join explicitly, and make it an inner join so the constraint actually
   // narrows the result.
+  //
+  // Filtering on starts_at was also the wrong column: a show can start at
+  // 22:00 with the door open from 21:00 to 04:00, and starts_at tells you
+  // nothing about when admission actually runs. check_in_from/check_in_until
+  // is the column the schema defines specifically for this — pull a ticket
+  // whenever its event's real admission window overlaps the sync horizon.
   const { data: tickets, error } = await supabase
     .from('tickets')
     .select(`
       id, totp_secret_enc, buyer_name, status, event_id,
       ticket_types!inner(name),
-      events!inner(starts_at)
+      events!inner(check_in_from, check_in_until)
     `)
     .eq('status', 'issued')
-    .lte('events.starts_at', windowEnd)
-    .gte('events.starts_at', windowStart)
+    .lte('events.check_in_from', windowEnd)
+    .gte('events.check_in_until', windowStart)
 
   if (error) {
     db.prepare(

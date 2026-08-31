@@ -64,7 +64,15 @@ export async function POST(req: NextRequest) {
 
   if (!ticket) return NextResponse.json({ ok: false, reason: 'not_found' } satisfies RedeemResult)
 
-  const secret = decodeTotpSecret(ticket.totp_secret_enc as string)
+  // A single corrupted or malformed ciphertext must not 500 the door for the
+  // one guest holding that ticket — it fails as a bad code, the same outcome
+  // a wrong TOTP produces, and the scanner already has a clean state for that.
+  let secret: string
+  try {
+    secret = decodeTotpSecret(ticket.totp_secret_enc as string)
+  } catch {
+    return NextResponse.json({ ok: false, reason: 'invalid_code' } satisfies RedeemResult)
+  }
   if (!verifyTotp(secret, totpCode, 1)) {
     return NextResponse.json({ ok: false, reason: 'invalid_code' } satisfies RedeemResult)
   }
