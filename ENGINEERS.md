@@ -5,7 +5,7 @@ the Paystack key is not `sk_live`.
 
 ## Apply before first live charge
 
-1. Run Supabase migrations `001` through `024` in order. `017`, `018` and `019`
+1. Run Supabase migrations `001` through `025` in order. `017`, `018` and `019`
    are the audit passes and are **not optional** — between them they enable
    RLS on the payroll and stock tables, revoke the financial RPCs from the
    browser key, stamp every posting with its shift, add the ledger balance
@@ -215,6 +215,36 @@ heartbeat (nothing in the current system consumes that endpoint — `/api/rail`
 polling replaced it — so it's fixing dead code), and a device-registration API
 (bigger scope than a reconciliation pass; still manual per the provisioning
 note above).
+
+## Domain cutover from the legacy site
+
+`MEMORIES-NIGHT-CLUB` (the static site) is the live domain today. This repo's
+public pages (`/`, `/events`, `/tickets/[id]`, the new host-an-event form)
+now cover what it does — content parity, not a redesign; see the build brief
+for why the visual system deliberately did not change. Before pointing the
+domain here:
+
+1. Set every secret and env var in "Apply before first live charge" above,
+   with `PAYSTACK_SECRET_KEY` a real `sk_live_…` key and `EVOLVEIT_DEMO`
+   unset. Confirm `NEXT_PUBLIC_APP_URL` matches the domain being cut over,
+   not a staging URL — Paystack callbacks and ticket deep links embed it.
+2. Fill in `venue_settings` for real (Section 4's admin panel, `/admin/settings`)
+   — gate/table pricing, WhatsApp/email/address, socials, tagline. The
+   homepage reads these live; an empty row means blank contact info on a
+   real domain.
+3. Publish at least one `published` event with ticket types and a flyer, so
+   `/` and `/events` don't show "nothing posted yet" the moment the domain
+   goes live.
+4. Rotate every demo PIN seeded in `009` and the demo night — they are
+   sha256 with no pepper and are not safe on a public domain.
+5. Point the domain's DNS at this app's host, keep the legacy site
+   reachable at a fallback path (a subdomain, or just left undeployed but
+   not deleted) for a short overlap window in case a printed flyer or an
+   old bookmark still points at a legacy URL, then retire it.
+6. `MEMORIES-NIGHT-CLUB`'s Firebase-backed event-booking form is replaced by
+   `/api/public/event-proposals` landing in the same `organiser_submissions`
+   inbox staff already review (`/organiser`) — nothing in Firebase needs to
+   be migrated forward; it was lead capture only, not a system of record.
 
 ## CI
 
