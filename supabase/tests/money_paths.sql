@@ -433,3 +433,42 @@ BEGIN
 
   RAISE NOTICE 'PASS  cash ticket sale requires a named owner and posts to cash_drawer, idempotently';
 END $$;
+
+-- ══ 11. A queued offline order retried on reconnect lands once ════════════
+-- The PWA queues a cash order locally when a waiter is offline and retries
+-- it once the connection returns. place_order's new local_ref parameter is
+-- what stops that retry from placing a second order for the same round.
+DO $$
+DECLARE
+  v_t uuid; v_owner uuid; v_product uuid; v_ref text; v_r jsonb; v_oid1 uuid; v_oid2 uuid;
+  v_count int;
+BEGIN
+  SELECT id INTO v_t FROM tenants WHERE slug='memories-nc';
+  SELECT id INTO v_owner FROM users WHERE tenant_id=v_t AND EXISTS (
+    SELECT 1 FROM user_roles WHERE user_id=users.id AND role='owner') LIMIT 1;
+  SELECT id INTO v_product FROM products WHERE tenant_id=v_t AND is_available LIMIT 1;
+  v_ref := 'local_' || encode(gen_random_bytes(8),'hex');
+
+  -- Same shift as test 10, still open.
+  v_r := place_order(v_t, 'waiter', 'Offline Table', '+233244900000', 'cash', NULL,
+    NULL, 'Table 1', v_owner, NULL,
+    jsonb_build_array(jsonb_build_object('product_id', v_product, 'quantity', 2)),
+    v_ref);
+  IF NOT (v_r->>'ok')::bool THEN RAISE EXCEPTION 'FAIL: first attempt failed: %', v_r; END IF;
+  v_oid1 := (v_r->>'order_id')::uuid;
+
+  -- The queue retries with the exact same local_ref, as it would after the
+  -- connection drops before the response is heard.
+  v_r := place_order(v_t, 'waiter', 'Offline Table', '+233244900000', 'cash', NULL,
+    NULL, 'Table 1', v_owner, NULL,
+    jsonb_build_array(jsonb_build_object('product_id', v_product, 'quantity', 2)),
+    v_ref);
+  IF NOT (v_r->>'already')::bool THEN RAISE EXCEPTION 'FAIL: retry was not recognised as a replay: %', v_r; END IF;
+  v_oid2 := (v_r->>'order_id')::uuid;
+  IF v_oid1 <> v_oid2 THEN RAISE EXCEPTION 'FAIL: retry created a second order'; END IF;
+
+  SELECT count(*) INTO v_count FROM orders WHERE local_ref = v_ref;
+  IF v_count <> 1 THEN RAISE EXCEPTION 'FAIL: expected exactly one order for that local_ref, got %', v_count; END IF;
+
+  RAISE NOTICE 'PASS  a queued order retried on reconnect lands exactly once';
+END $$;
