@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { formatAmount } from '@evolveit/shared/money'
 import { normalisePhone } from '@evolveit/shared/phone'
+import { enqueue } from '@/lib/offline-order-queue'
+import { OfflineQueueBadge } from '@/components/OfflineQueueBadge'
 
 interface Product {
   id: string
@@ -22,7 +24,7 @@ interface MenuResponse {
   products: Product[]
 }
 
-interface Placed { token: string; amount_pesewas: number }
+interface Placed { token: string; amount_pesewas: number; queued?: boolean }
 
 interface CartItem {
   product: Product
@@ -85,16 +87,21 @@ export default function MenuPage() {
     if (!validatePhone() || !guestName) return
     setIsLoading(true)
     setOrderError('')
+
+    const items = cart.map(c => ({ product_id: c.product.id, quantity: c.quantity }))
+    const clientOrderId = crypto.randomUUID()
+
     try {
       const res = await fetch('/api/orders/initiate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           token,
-          items: cart.map(c => ({ product_id: c.product.id, quantity: c.quantity })),
+          items,
           guest_name: guestName,
           guest_phone: guestPhone,
           payment_source: paymentSource,
+          client_order_id: clientOrderId,
         }),
       })
       const data = await res.json() as {
@@ -133,7 +140,25 @@ export default function MenuPage() {
 
       setOrderError('That order did not go through. Nothing has been charged.')
     } catch {
-      setOrderError('Lost the connection. Nothing has been charged — try again.')
+      // A network-level failure, not a rejection from the server. A MoMo
+      // order needs a live redirect to Paystack, so there's nothing to
+      // queue — but a cash round (the waitstaff-on-a-bad-connection case
+      // this exists for) can be queued and sent the moment the connection
+      // returns, instead of the guest having to notice and retry.
+      if (paymentSource === 'cash') {
+        await enqueue({
+          client_order_id: clientOrderId,
+          token: String(token),
+          items,
+          guest_name: guestName,
+          guest_phone: guestPhone,
+        })
+        sessionStorage.removeItem(`cart-${token}`)
+        setCart([])
+        setPlaced({ token: clientOrderId.slice(0, 4).toUpperCase(), amount_pesewas: totalPesewas, queued: true })
+      } else {
+        setOrderError('Lost the connection. Nothing has been charged — try again, or switch to cash if a server is nearby.')
+      }
     } finally {
       setIsLoading(false)
     }
@@ -156,11 +181,14 @@ export default function MenuPage() {
 
   if (placed) return (
     <div className="flex min-h-screen flex-col justify-center bg-[#08070D] px-6 text-[#F3EDE4]">
-      <p className="text-[11px] uppercase tracking-[0.28em] text-[#8A8580]">Order in</p>
+      <p className="text-[11px] uppercase tracking-[0.28em] text-[#8A8580]">
+        {placed.queued ? 'Queued — no signal yet' : 'Order in'}
+      </p>
       <p className="mt-4 font-display text-[96px] leading-none text-ev-crimson">{placed.token}</p>
       <p className="mt-4 max-w-xs text-[15px] leading-relaxed text-[#C4B8A8]">
-        That is your number. The bar calls it when your round is up — keep this
-        screen, or remember the four digits.
+        {placed.queued
+          ? 'This order is saved on the device and will send itself the moment the connection returns — no need to do anything.'
+          : 'That is your number. The bar calls it when your round is up — keep this screen, or remember the four digits.'}
       </p>
       <p className="mt-6 font-mono text-[20px]">{formatAmount(placed.amount_pesewas)}</p>
       <p className="mt-1 text-[12px] text-[#8A8580]">{menu.table.label}</p>
@@ -170,6 +198,7 @@ export default function MenuPage() {
       >
         Order something else
       </button>
+      <OfflineQueueBadge />
     </div>
   )
 
@@ -308,6 +337,7 @@ export default function MenuPage() {
           ← Back to menu
         </button>
       )}
+      <OfflineQueueBadge />
     </div>
   )
 }

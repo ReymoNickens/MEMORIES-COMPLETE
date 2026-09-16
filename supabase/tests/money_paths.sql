@@ -292,3 +292,259 @@ BEGIN
   END IF;
   RAISE NOTICE 'PASS  reservation status transitions are readable for the route to gate on';
 END $$;
+
+-- ══ 9. Raffle draw never over-awards, and a prize redeems exactly once ═════
+-- The build brief for the raffle feature requires the draw to happen inside
+-- complete_paid_checkout itself and never hand out more than the configured
+-- pool, whatever order tickets clear in. Checks a fixed-count pool of 3 out
+-- of 10 tickets sold one at a time — every prize claimed, none oversold —
+-- then exercises redeem_raffle_prize's one-time-only guard and confirms its
+-- ledger posting balances like every other money-moving path here.
+DO $$
+DECLARE
+  v_t uuid; v_owner uuid; v_prize uuid; v_co uuid; v_ref text;
+  v_result jsonb; v_ticket uuid; v_wins int; v_left int; v_ref_id text;
+BEGIN
+  SELECT id INTO v_t FROM tenants WHERE slug='memories-nc';
+  SELECT id INTO v_owner FROM users WHERE tenant_id=v_t AND EXISTS (
+    SELECT 1 FROM user_roles WHERE user_id=users.id AND role='owner') LIMIT 1;
+
+  -- The door must actually be open for the redemption half of this test.
+  UPDATE events SET check_in_from = now() - interval '1 hour',
+                     check_in_until = now() + interval '6 hours'
+    WHERE id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  UPDATE ticket_types SET remaining = 10 WHERE id='cccccccc-cccc-cccc-cccc-cccccccccccc';
+
+  INSERT INTO raffle_prizes (event_id, tenant_id, ticket_type_id, name, redemption_type,
+    win_mode, quantity_available, quantity_remaining, ledger_account, cost_pesewas, created_by)
+  VALUES ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', v_t, 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+    'Free bottle', 'free_item', 'fixed_count', 3, 3, 'comps', 15000, v_owner)
+  RETURNING id INTO v_prize;
+
+  FOR i IN 1..10 LOOP
+    v_ref := 'raffle_' || i || '_' || encode(gen_random_bytes(5),'hex');
+    INSERT INTO pending_checkouts (tenant_id, ticket_type_id, event_id, quantity,
+      buyer_name, buyer_phone, buyer_email, amount_pesewas, paystack_ref, status)
+    VALUES (v_t,'cccccccc-cccc-cccc-cccc-cccccccccccc','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      1,'Raffle Buyer','+2332449' || lpad((floor(random()*100000))::int::text,5,'0'),
+      'raffle@example.gh',20000,v_ref,'paid')
+    RETURNING id INTO v_co;
+
+    PERFORM complete_paid_checkout(v_co, jsonb_build_array(
+      jsonb_build_object('totp_enc','r','access_hash',encode(gen_random_bytes(16),'hex'),
+                         'amount_pesewas',20000,'paystack_ref',v_ref)));
+  END LOOP;
+
+  SELECT count(*) INTO v_wins FROM ticket_rewards WHERE raffle_prize_id = v_prize;
+  SELECT quantity_remaining INTO v_left FROM raffle_prizes WHERE id = v_prize;
+  IF v_wins <> 3 OR v_left <> 0 THEN
+    RAISE EXCEPTION 'FAIL: expected exactly 3 winners and 0 left, got % winners / % left', v_wins, v_left;
+  END IF;
+  RAISE NOTICE 'PASS  fixed-count raffle draw awards exactly the pool, never over-awards';
+
+  SELECT ticket_id INTO v_ticket FROM ticket_rewards WHERE raffle_prize_id = v_prize LIMIT 1;
+  v_result := redeem_ticket(v_ticket, NULL, 'Test Door', 'Door 1', 'online');
+  IF NOT (v_result->>'ok')::bool OR NOT (v_result->'reward'->>'won')::bool THEN
+    RAISE EXCEPTION 'FAIL: admitting a winning ticket did not surface its reward: %', v_result;
+  END IF;
+
+  v_result := redeem_raffle_prize(v_ticket, v_owner);
+  IF NOT (v_result->>'ok')::bool THEN
+    RAISE EXCEPTION 'FAIL: could not redeem a legitimate prize: %', v_result;
+  END IF;
+  v_result := redeem_raffle_prize(v_ticket, v_owner);
+  IF (v_result->>'ok')::bool OR v_result->>'reason' <> 'already_redeemed' THEN
+    RAISE EXCEPTION 'FAIL: prize redeemed twice: %', v_result;
+  END IF;
+  RAISE NOTICE 'PASS  a raffle prize redeems exactly once';
+
+  SELECT tr.id::text INTO v_ref_id FROM ticket_rewards tr WHERE ticket_id = v_ticket;
+  IF (SELECT COALESCE(SUM(CASE WHEN direction='DR' THEN amount_pesewas ELSE -amount_pesewas END),0)
+      FROM ledger_entries WHERE ref_type='raffle_redemption' AND ref_id::text = v_ref_id) <> 0 THEN
+    RAISE EXCEPTION 'FAIL: raffle redemption ledger entry does not balance';
+  END IF;
+  RAISE NOTICE 'PASS  raffle redemption posts a balanced ledger entry';
+END $$;
+
+-- ══ 10. Cash walk-up ticket sale: named owner required, posts to cash ═════
+-- Front Office sells tickets for cash at the door. Same accountability rule
+-- as a cash bar order (place_order already enforces it for F&B) — cash
+-- with no attributed staff member and no open shift is refused outright —
+-- and the sale must land in cash_collections for shift-close reconciliation
+-- and post DR cash_drawer / CR ticket_revenue rather than momo_clearing.
+DO $$
+DECLARE
+  v_t uuid; v_owner uuid; v_co uuid; v_ref text; v_r jsonb; v_tid uuid;
+  v_dr bigint; v_cr bigint;
+BEGIN
+  SELECT id INTO v_t FROM tenants WHERE slug='memories-nc';
+  SELECT id INTO v_owner FROM users WHERE tenant_id=v_t AND EXISTS (
+    SELECT 1 FROM user_roles WHERE user_id=users.id AND role='owner') LIMIT 1;
+
+  UPDATE ticket_types SET remaining = 10 WHERE id='cccccccc-cccc-cccc-cccc-cccccccccccc';
+  v_ref := 'cash_' || encode(gen_random_bytes(6),'hex');
+
+  INSERT INTO pending_checkouts (tenant_id, ticket_type_id, event_id, quantity,
+    buyer_name, buyer_phone, buyer_email, amount_pesewas, paystack_ref, status)
+  VALUES (v_t,'cccccccc-cccc-cccc-cccc-cccccccccccc','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    1,'Walk-up Guest','+2332449' || lpad((floor(random()*100000))::int::text,5,'0'),
+    'walkup@example.gh',20000,v_ref,'paid')
+  RETURNING id INTO v_co;
+
+  -- No shift open right now in this test run — refused, same as cash F&B.
+  BEGIN
+    PERFORM complete_cash_ticket_checkout(v_co, jsonb_build_array(
+      jsonb_build_object('totp_enc','c','access_hash',encode(gen_random_bytes(16),'hex'),
+                         'amount_pesewas',20000,'paystack_ref',v_ref||'-1')), NULL);
+    RAISE EXCEPTION 'FAIL: cash sale went through with no attributed staff member';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'cash_needs_waiter_and_shift' THEN
+      RAISE EXCEPTION 'FAIL: expected cash_needs_waiter_and_shift, got %', SQLERRM;
+    END IF;
+  END;
+
+  -- Open a shift, then the same checkout succeeds and books correctly.
+  INSERT INTO shifts (tenant_id, opened_by) VALUES (v_t, v_owner);
+  v_r := complete_cash_ticket_checkout(v_co, jsonb_build_array(
+    jsonb_build_object('totp_enc','c','access_hash',encode(gen_random_bytes(16),'hex'),
+                       'amount_pesewas',20000,'paystack_ref',v_ref||'-1')), v_owner);
+  IF NOT (v_r->>'ok')::bool THEN RAISE EXCEPTION 'FAIL: cash ticket sale failed: %', v_r; END IF;
+  v_tid := ((v_r->'ticket_ids')->>0)::uuid;
+
+  IF NOT EXISTS (SELECT 1 FROM cash_collections WHERE ticket_checkout_id = v_co AND attributed_waiter_id = v_owner) THEN
+    RAISE EXCEPTION 'FAIL: cash ticket sale did not book a cash_collections row';
+  END IF;
+
+  SELECT COALESCE(SUM(amount_pesewas) FILTER (WHERE direction='DR' AND account='cash_drawer'),0),
+         COALESCE(SUM(amount_pesewas) FILTER (WHERE direction='CR' AND account='ticket_revenue'),0)
+    INTO v_dr, v_cr
+    FROM ledger_entries WHERE ref_type='ticket_payment' AND ref_id=v_tid;
+  IF v_dr <> 20000 OR v_cr <> 20000 THEN
+    RAISE EXCEPTION 'FAIL: cash ticket posting wrong, DR % CR %', v_dr, v_cr;
+  END IF;
+
+  -- Replaying the same checkout (a retried tap) must not sell a second ticket.
+  v_r := complete_cash_ticket_checkout(v_co, jsonb_build_array(
+    jsonb_build_object('totp_enc','c','access_hash',encode(gen_random_bytes(16),'hex'),
+                       'amount_pesewas',20000,'paystack_ref',v_ref||'-1')), v_owner);
+  IF NOT (v_r->>'already')::bool OR ((v_r->'ticket_ids')->>0)::uuid <> v_tid THEN
+    RAISE EXCEPTION 'FAIL: cash ticket sale was not idempotent on replay';
+  END IF;
+
+  RAISE NOTICE 'PASS  cash ticket sale requires a named owner and posts to cash_drawer, idempotently';
+END $$;
+
+-- ══ 11. A queued offline order retried on reconnect lands once ════════════
+-- The PWA queues a cash order locally when a waiter is offline and retries
+-- it once the connection returns. place_order's new local_ref parameter is
+-- what stops that retry from placing a second order for the same round.
+DO $$
+DECLARE
+  v_t uuid; v_owner uuid; v_product uuid; v_ref text; v_r jsonb; v_oid1 uuid; v_oid2 uuid;
+  v_count int;
+BEGIN
+  SELECT id INTO v_t FROM tenants WHERE slug='memories-nc';
+  SELECT id INTO v_owner FROM users WHERE tenant_id=v_t AND EXISTS (
+    SELECT 1 FROM user_roles WHERE user_id=users.id AND role='owner') LIMIT 1;
+  SELECT id INTO v_product FROM products WHERE tenant_id=v_t AND is_available LIMIT 1;
+  v_ref := 'local_' || encode(gen_random_bytes(8),'hex');
+
+  -- Same shift as test 10, still open.
+  v_r := place_order(v_t, 'waiter', 'Offline Table', '+233244900000', 'cash', NULL,
+    NULL, 'Table 1', v_owner, NULL,
+    jsonb_build_array(jsonb_build_object('product_id', v_product, 'quantity', 2)),
+    v_ref);
+  IF NOT (v_r->>'ok')::bool THEN RAISE EXCEPTION 'FAIL: first attempt failed: %', v_r; END IF;
+  v_oid1 := (v_r->>'order_id')::uuid;
+
+  -- The queue retries with the exact same local_ref, as it would after the
+  -- connection drops before the response is heard.
+  v_r := place_order(v_t, 'waiter', 'Offline Table', '+233244900000', 'cash', NULL,
+    NULL, 'Table 1', v_owner, NULL,
+    jsonb_build_array(jsonb_build_object('product_id', v_product, 'quantity', 2)),
+    v_ref);
+  IF NOT (v_r->>'already')::bool THEN RAISE EXCEPTION 'FAIL: retry was not recognised as a replay: %', v_r; END IF;
+  v_oid2 := (v_r->>'order_id')::uuid;
+  IF v_oid1 <> v_oid2 THEN RAISE EXCEPTION 'FAIL: retry created a second order'; END IF;
+
+  SELECT count(*) INTO v_count FROM orders WHERE local_ref = v_ref;
+  IF v_count <> 1 THEN RAISE EXCEPTION 'FAIL: expected exactly one order for that local_ref, got %', v_count; END IF;
+
+  RAISE NOTICE 'PASS  a queued order retried on reconnect lands exactly once';
+END $$;
+
+-- ══ 12. Bar stock reconciliation catches what cash reconciliation cannot ══
+-- A bartender who under-rings a round and pockets the difference balances
+-- their cash perfectly — get_stock_reconciliation is the only thing that
+-- catches that, by comparing what physically left the shelf (opening minus
+-- closing count) against what the till says was sold plus any logged
+-- adjustment (comp/breakage/debt/transfer). Also checks that finalizing
+-- twice doesn't clobber a manager's decision on an already-explained one.
+DO $$
+DECLARE
+  v_t uuid; v_owner uuid; v_shift uuid; v_bottle uuid; v_beer uuid;
+  v_rec record; v_finalize jsonb;
+BEGIN
+  SELECT id INTO v_t FROM tenants WHERE slug='memories-nc';
+  SELECT id INTO v_owner FROM users WHERE tenant_id=v_t AND EXISTS (
+    SELECT 1 FROM user_roles WHERE user_id=users.id AND role='owner') LIMIT 1;
+  -- Same shift as tests 10/11, still open. Pick products with no order
+  -- history on it yet (tests 10/11 already sold something on this shift) so
+  -- this test's absolute counts aren't contaminated by earlier ones sharing
+  -- the same shift.
+  SELECT id INTO v_shift FROM shifts WHERE tenant_id=v_t AND closed_at IS NULL;
+  SELECT p.id INTO v_bottle FROM products p
+    WHERE p.tenant_id=v_t AND p.station='bar' AND p.price_pesewas > 10000
+      AND NOT EXISTS (SELECT 1 FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE o.shift_id=v_shift AND oi.product_id=p.id)
+    LIMIT 1;
+  SELECT p.id INTO v_beer FROM products p
+    WHERE p.tenant_id=v_t AND p.station='bar' AND p.price_pesewas < 10000
+      AND NOT EXISTS (SELECT 1 FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE o.shift_id=v_shift AND oi.product_id=p.id)
+    LIMIT 1;
+
+  -- Bottle: 20 opened, 6 physically closed out = 14 gone. Only 12 were rung
+  -- up through the till (two rounds of 6). Two units are unaccounted for.
+  INSERT INTO stock_openings (shift_id, product_id, qty, set_by) VALUES (v_shift, v_bottle, 20, v_owner);
+  PERFORM place_order(v_t, 'waiter', 'Recon A', '+233240002001', 'cash', NULL, NULL, 'Bar Main', v_owner, v_shift,
+    jsonb_build_array(jsonb_build_object('product_id', v_bottle, 'quantity', 6)));
+  PERFORM place_order(v_t, 'waiter', 'Recon B', '+233240002002', 'cash', NULL, NULL, 'Bar Main', v_owner, v_shift,
+    jsonb_build_array(jsonb_build_object('product_id', v_bottle, 'quantity', 6)));
+  INSERT INTO stock_closings (shift_id, product_id, qty, set_by) VALUES (v_shift, v_bottle, 6, v_owner);
+
+  -- Beer: 100 opened, 20 sold, 5 comped (logged), 75 closed out = 25 gone,
+  -- exactly matching 20 sold + 5 comped. Clean.
+  INSERT INTO stock_openings (shift_id, product_id, qty, set_by) VALUES (v_shift, v_beer, 100, v_owner);
+  PERFORM place_order(v_t, 'waiter', 'Recon C', '+233240002003', 'cash', NULL, NULL, 'Bar Main', v_owner, v_shift,
+    jsonb_build_array(jsonb_build_object('product_id', v_beer, 'quantity', 20)));
+  INSERT INTO stock_adjustments (tenant_id, shift_id, product_id, kind, qty, amount_pesewas, note, actor_id)
+  VALUES (v_t, v_shift, v_beer, 'comp', 5, 0, 'round on the house', v_owner);
+  INSERT INTO stock_closings (shift_id, product_id, qty, set_by) VALUES (v_shift, v_beer, 75, v_owner);
+
+  SELECT * INTO v_rec FROM get_stock_reconciliation(v_shift) WHERE product_id = v_bottle;
+  IF v_rec.shortage_qty <> 2 THEN RAISE EXCEPTION 'FAIL: expected a 2-unit bottle shortage, got %', v_rec.shortage_qty; END IF;
+
+  SELECT * INTO v_rec FROM get_stock_reconciliation(v_shift) WHERE product_id = v_beer;
+  IF v_rec.shortage_qty <> 0 THEN RAISE EXCEPTION 'FAIL: beer should reconcile clean once the comp is counted in, got shortage %', v_rec.shortage_qty; END IF;
+
+  SELECT * INTO v_rec FROM get_stock_reconciliation(v_shift) WHERE product_id NOT IN (v_bottle, v_beer) LIMIT 1;
+  IF v_rec.counted THEN RAISE EXCEPTION 'FAIL: an uncounted product must never report counted=true'; END IF;
+  RAISE NOTICE 'PASS  stock reconciliation flags a real leak, clears an explained one, and never flags the uncounted';
+
+  v_finalize := finalize_stock_reconciliation(v_shift, v_owner);
+  IF (v_finalize->>'flagged')::int <> 1 THEN RAISE EXCEPTION 'FAIL: expected exactly 1 flagged shortage, got %', v_finalize->>'flagged'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM stock_shortages WHERE shift_id=v_shift AND product_id=v_bottle AND qty=2 AND status='open') THEN
+    RAISE EXCEPTION 'FAIL: the bottle shortage was not written to stock_shortages';
+  END IF;
+  IF EXISTS (SELECT 1 FROM stock_shortages WHERE shift_id=v_shift AND product_id=v_beer) THEN
+    RAISE EXCEPTION 'FAIL: beer reconciled clean and must not have a shortage row';
+  END IF;
+
+  UPDATE stock_shortages SET status='explained', note='recount confirmed, under-poured not stolen'
+    WHERE shift_id=v_shift AND product_id=v_bottle;
+  PERFORM finalize_stock_reconciliation(v_shift, v_owner);
+  IF (SELECT status FROM stock_shortages WHERE shift_id=v_shift AND product_id=v_bottle) <> 'explained' THEN
+    RAISE EXCEPTION 'FAIL: re-running reconciliation overwrote a manager''s explained decision';
+  END IF;
+
+  RAISE NOTICE 'PASS  finalize snapshots exactly the real leak once, and a manager''s decision on it survives a re-run';
+END $$;

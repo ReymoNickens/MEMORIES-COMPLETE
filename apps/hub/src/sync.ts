@@ -42,20 +42,25 @@ export async function syncDown(): Promise<void> {
   }
 
   const upsertTicket = db.prepare(`
-    INSERT OR REPLACE INTO hub_tickets (ticket_id, event_id, totp_secret, buyer_name, type_name, status)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO hub_tickets (ticket_id, event_id, totp_secret, buyer_name, type_name, status, check_in_from, check_in_until)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   for (const t of (tickets ?? [])) {
     const embedded = t.ticket_types as unknown
     const tt = (Array.isArray(embedded) ? embedded[0] : embedded) as { name: string } | null
+    const embeddedEvent = t.events as unknown
+    const ev = (Array.isArray(embeddedEvent) ? embeddedEvent[0] : embeddedEvent) as
+      { check_in_from: string; check_in_until: string } | null
     upsertTicket.run(
       t.id,
       (t.event_id as string) ?? '',
       decryptSecret(t.totp_secret_enc as string),
       t.buyer_name,
       tt?.name ?? 'General',
-      t.status
+      t.status,
+      ev?.check_in_from ?? '',
+      ev?.check_in_until ?? ''
     )
   }
 

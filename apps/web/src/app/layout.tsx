@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next'
 import { Instrument_Serif, Manrope, IBM_Plex_Mono } from 'next/font/google'
 import '../styles/globals.css'
+import { ServiceWorkerRegister } from '@/components/ServiceWorkerRegister'
 
 const display = Instrument_Serif({
   subsets: ['latin'],
@@ -36,7 +37,10 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" data-tenant="memories-nc" className={`${display.variable} ${body.variable} ${mono.variable}`}>
-      <body className="font-body bg-[#08070D] text-[#F3EDE4] antialiased">{children}</body>
+      <body className="font-body bg-[#08070D] text-[#F3EDE4] antialiased">
+        <ServiceWorkerRegister />
+        {children}
+      </body>
     </html>
   )
 }

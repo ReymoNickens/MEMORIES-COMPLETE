@@ -12,6 +12,9 @@ interface OrderInitiateRequest {
   guest_name: string
   guest_phone: string
   payment_source: 'momo' | 'cash'
+  // Client-generated, carried by a queued offline order so a retry after
+  // reconnecting lands on the same order instead of placing a second one.
+  client_order_id?: string
 }
 
 export async function POST(req: NextRequest) {
@@ -22,7 +25,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(makeError(ErrorCodes.NOT_FOUND, 'Invalid request body'), { status: 400 })
   }
 
-  const { token, items, guest_name, guest_phone, payment_source } = body
+  const { token, items, guest_name, guest_phone, payment_source, client_order_id } = body
   if (!token || !guest_name || !items?.length) {
     return NextResponse.json(makeError(ErrorCodes.NOT_FOUND, 'Missing order fields'), { status: 400 })
   }
@@ -106,6 +109,7 @@ export async function POST(req: NextRequest) {
     p_waiter_id: payment_source === 'cash' ? staff!.user_id : null,
     p_shift_id: shiftId,
     p_items: lines,
+    p_local_ref: client_order_id ? String(client_order_id).slice(0, 64) : null,
   })
 
   if (error) {

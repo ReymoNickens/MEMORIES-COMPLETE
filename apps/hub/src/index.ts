@@ -88,10 +88,33 @@ app.post('/v1/redeem', (req, res) => {
 
   // 3. Get ticket secret
   const ticket = db.prepare('SELECT * FROM hub_tickets WHERE ticket_id = ?').get(ticket_id) as
-    { ticket_id: string; totp_secret: string; buyer_name: string; type_name: string; status: string } | undefined
+    { ticket_id: string; totp_secret: string; buyer_name: string; type_name: string; status: string
+      check_in_from: string; check_in_until: string } | undefined
 
   if (!ticket) {
     return res.json({ ok: false, reason: 'not_in_hub' } satisfies RedeemResult)
+  }
+
+  // 3b. Admission window. The cloud checks this on every scan
+  // (events.check_in_from/until); the hub previously relied only on
+  // syncDown's pull window to keep an out-of-window ticket out of its local
+  // cache, which drifts the moment a sync is late — a network hiccup could
+  // leave a stale-but-still-present ticket admittable past its real window.
+  // Checked here too so the two paths make the same call, not two that can
+  // quietly disagree. A row synced from before this column existed has an
+  // empty string, not a missing window — never lock a real ticket out over
+  // a schema upgrade, treat that as "no window recorded" and let the cloud
+  // (which always has the real window) be the backstop.
+  if (ticket.check_in_from && ticket.check_in_until) {
+    // Parsed to timestamps, not compared as strings: PostgREST returns
+    // timestamptz as "...+00:00" while Date's own ISO strings end "...Z" —
+    // different formats sort incorrectly against each other as text.
+    const now = Date.now()
+    const from = Date.parse(ticket.check_in_from)
+    const until = Date.parse(ticket.check_in_until)
+    if (now < from || now > until) {
+      return res.json({ ok: false, reason: 'outside_window' } satisfies RedeemResult)
+    }
   }
 
   // 4. Verify TOTP (never log the secret)

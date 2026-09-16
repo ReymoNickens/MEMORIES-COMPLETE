@@ -9,6 +9,10 @@ interface Sub {
   preferred_date: string
   status: string
   estimated_attendance: number
+  organiser_id: string | null
+  contact_email: string | null
+  contact_phone: string | null
+  contact_instagram: string | null
 }
 
 export default function OrganiserPage() {
@@ -44,6 +48,12 @@ export default function OrganiserPage() {
             <div>
               <p className="font-semibold">{s.event_name}</p>
               <p className="text-micro">{s.preferred_date} · {s.status} · {s.estimated_attendance} pax</p>
+              <p className="text-micro">{s.host_name}</p>
+              {!s.organiser_id && (
+                <p className="text-micro text-ev-crimson">
+                  Public submission — no staff account · {[s.contact_phone, s.contact_email, s.contact_instagram].filter(Boolean).join(' · ')}
+                </p>
+              )}
             </div>
             <div className="flex gap-2">
               <button className="h-10 px-3 border rounded" onClick={() => void fetch('/api/organiser/submissions', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: s.id, status: 'approved' }) }).then(load)}>Approve</button>

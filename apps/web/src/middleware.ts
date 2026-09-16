@@ -14,7 +14,7 @@ import { NextRequest, NextResponse } from 'next/server'
  * All this buys is skipping the flash of a page shell — and the extra API
  * round trip — for the common case of no cookie at all.
  */
-const PROTECTED_PREFIXES = ['/dashboard', '/organiser', '/bar', '/kitchen', '/floor', '/waiter', '/reissue', '/staff/claim']
+const PROTECTED_PREFIXES = ['/dashboard', '/organiser', '/bar', '/kitchen', '/floor', '/waiter', '/reissue', '/staff/claim', '/staff/home', '/admin', '/front-office', '/stock']
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
@@ -34,5 +34,6 @@ export const config = {
   matcher: [
     '/dashboard/:path*', '/organiser/:path*', '/bar/:path*', '/kitchen/:path*',
     '/floor/:path*', '/waiter/:path*', '/reissue/:path*', '/staff/claim/:path*',
+    '/staff/home/:path*', '/admin/:path*', '/front-office/:path*', '/stock/:path*',
   ],
 }

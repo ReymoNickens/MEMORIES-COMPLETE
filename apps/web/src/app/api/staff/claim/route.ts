@@ -1,26 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServiceRole } from '@/lib/supabase/server'
 import { getStaffSession, staffCookieHeader } from '@/lib/staff-session'
-
-const ALL_STATIONS = ['door', 'bar', 'kitchen', 'floor', 'cashier']
-
-const ROLE_STATIONS: Record<string, string[]> = {
-  owner: ALL_STATIONS,
-  manager: ALL_STATIONS,
-  event_manager: ALL_STATIONS,
-  door: ['door'],
-  front_office: ['door', 'floor'],
-  bartender: ['bar'],
-  kitchen: ['kitchen'],
-  waiter: ['floor'],
-  cashier: ['cashier'],
-  // Roles that hold no station: they have no till and no rail to work.
-  organiser: [],
-  hr: [],
-  finance: [],
-  dj: [],
-  mc: [],
-}
+import { stationKindsForRoles } from '@/lib/station-roles'
 
 export async function POST(req: NextRequest) {
   const session = await getStaffSession()
@@ -31,8 +12,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Station required' }, { status: 400 })
   }
 
-  const allowed = session.roles.flatMap(r => ROLE_STATIONS[r] ?? [])
-  if (!allowed.includes(body.station_kind) && !session.roles.includes('owner') && !session.roles.includes('manager')) {
+  // The actual authorization boundary — /api/staff/me only filters what the
+  // UI offers, this is what stops a role from claiming a station it wasn't
+  // offered, whether that's an honest client or a hand-crafted request.
+  const allowed = stationKindsForRoles(session.roles)
+  if (!allowed.includes(body.station_kind as (typeof allowed)[number])) {
     return NextResponse.json({ error: 'Role cannot claim that station' }, { status: 403 })
   }
 

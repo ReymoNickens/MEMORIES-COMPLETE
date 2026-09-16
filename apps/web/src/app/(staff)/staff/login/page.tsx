@@ -3,6 +3,8 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Wordmark } from '@/components/Wordmark'
+import { landingPathForRoles } from '@/lib/station-roles'
+import type { StaffRole } from '@evolveit/shared/types'
 
 export default function StaffLoginPage() {
   const router = useRouter()
@@ -19,13 +21,13 @@ export default function StaffLoginPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone, pin }),
     })
-    const data = await res.json() as { error?: string }
+    const data = await res.json() as { error?: string; session?: { roles: StaffRole[] } }
     if (!res.ok) {
       setBusy(false)
       setErr(data.error ?? 'That PIN does not open the house.')
       return
     }
-    router.push('/staff/claim')
+    router.push(landingPathForRoles(data.session?.roles ?? []))
   }
 
   function press(d: string) {

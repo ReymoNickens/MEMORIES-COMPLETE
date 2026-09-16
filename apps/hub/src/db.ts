@@ -12,13 +12,15 @@ db.pragma('foreign_keys = ON')
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS hub_tickets (
-    ticket_id     TEXT PRIMARY KEY,
-    event_id      TEXT NOT NULL,
-    totp_secret   TEXT NOT NULL,  -- plaintext in hub (decrypted at sync time)
-    buyer_name    TEXT NOT NULL,
-    type_name     TEXT NOT NULL,
-    status        TEXT NOT NULL DEFAULT 'issued',
-    synced_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    ticket_id       TEXT PRIMARY KEY,
+    event_id        TEXT NOT NULL,
+    totp_secret     TEXT NOT NULL,  -- plaintext in hub (decrypted at sync time)
+    buyer_name      TEXT NOT NULL,
+    type_name       TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'issued',
+    check_in_from   TEXT NOT NULL DEFAULT '',
+    check_in_until  TEXT NOT NULL DEFAULT '',
+    synced_at       TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
   CREATE TABLE IF NOT EXISTS hub_redemptions (
@@ -62,3 +64,15 @@ db.exec(`
     error       TEXT
   );
 `)
+
+// An already-provisioned hub.db predates check_in_from/check_in_until —
+// CREATE TABLE IF NOT EXISTS above is a no-op against it. ALTER TABLE has no
+// IF NOT EXISTS for ADD COLUMN, so add defensively and ignore "duplicate
+// column" on a hub.db that already has them.
+for (const col of ['check_in_from', 'check_in_until']) {
+  try {
+    db.exec(`ALTER TABLE hub_tickets ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`)
+  } catch (err) {
+    if (!/duplicate column/i.test((err as Error).message)) throw err
+  }
+}
