@@ -26,6 +26,8 @@ export default function ScannerPage() {
   const readerRef = useRef<BrowserQRCodeReader | null>(null)
   const [scanState, setScanState] = useState<ScanState>('idle')
   const [result, setResult] = useState<RedeemResult | null>(null)
+  const [rewardState, setRewardState] = useState<'idle' | 'redeeming' | 'redeemed'>('idle')
+  const [scannedTicketId, setScannedTicketId] = useState<string | null>(null)
   const [hubStatus, setHubStatus] = useState<'online' | 'degraded' | 'offline'>('offline')
   const [creds, setCreds] = useState(() => ({ id: '', key: '', door: 'Door 1' }))
   const lockRef = useRef(false)
@@ -109,6 +111,8 @@ export default function ScannerPage() {
 
     if (!res) return
     setResult(res)
+    setRewardState('idle')
+    setScannedTicketId(res.ok ? parsed.ticketId : null)
 
     if (res.ok) {
       playTone(440)
@@ -121,15 +125,35 @@ export default function ScannerPage() {
       setScanState('fail')
     }
 
-    schedule_reset()
+    // A winning ticket gets more time on screen so the door/bar staff can
+    // actually tap "mark redeemed" before the overlay clears itself.
+    schedule_reset(res.ok && res.reward?.won ? 10_000 : 4000)
   }
 
-  function schedule_reset() {
+  function schedule_reset(delay = 4000) {
     setTimeout(() => {
       setScanState('idle')
       setResult(null)
+      setRewardState('idle')
+      setScannedTicketId(null)
       lockRef.current = false
-    }, 4000)
+    }, delay)
+  }
+
+  async function markRewardRedeemed() {
+    if (!scannedTicketId || rewardState !== 'idle') return
+    setRewardState('redeeming')
+    try {
+      const res = await fetch('/api/v1/redeem/reward', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket_id: scannedTicketId }),
+      })
+      const data = await res.json() as { ok: boolean }
+      setRewardState(data.ok ? 'redeemed' : 'idle')
+    } catch {
+      setRewardState('idle')
+    }
   }
 
   function playTone(freq: number) {
@@ -196,6 +220,24 @@ export default function ScannerPage() {
               )}
               {result?.ticket_type && (
                 <p className="text-body-lg text-white/80 mt-1">{result.ticket_type}</p>
+              )}
+              {result?.reward?.won && (
+                <div className="mt-6 flex flex-col items-center">
+                  <p className="text-scanner-md text-[#FFD700] font-bold">
+                    🎉 WON: {result.reward.prize_name}
+                  </p>
+                  <p className="text-body-lg text-white/70 mt-1 capitalize">
+                    {result.reward.redemption_type?.replace(/_/g, ' ')}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={markRewardRedeemed}
+                    disabled={rewardState !== 'idle'}
+                    className="mt-4 rounded-full bg-white/15 px-6 py-3 text-body-lg text-white font-bold uppercase tracking-wide disabled:opacity-60"
+                  >
+                    {rewardState === 'redeemed' ? '✓ Redeemed' : rewardState === 'redeeming' ? 'Marking…' : 'Mark redeemed'}
+                  </button>
+                </div>
               )}
             </>
           )}

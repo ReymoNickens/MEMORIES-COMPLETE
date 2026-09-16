@@ -38,6 +38,15 @@ export interface RedeemRequest {
   door_label: string
 }
 
+export interface TicketReward {
+  won: boolean
+  reward_id?: string
+  prize_name?: string
+  redemption_type?: 'free_item' | 'upgrade' | 'digital_only'
+  redeemed_at?: string | null
+  redeemed_by_user_id?: string | null
+}
+
 export interface RedeemResult {
   ok: boolean
   reason?: 'already_used' | 'voided' | 'invalid_code' | 'outside_window' | 'not_found' | 'reserved' | 'used' | 'not_in_hub' | 'unauthorized'
@@ -46,6 +55,15 @@ export interface RedeemResult {
   event_name?: string
   scanned_at?: string
   door_label?: string
+  reward?: TicketReward
+}
+
+export interface RedeemRaffleResult {
+  ok: boolean
+  reason?: 'no_reward' | 'already_redeemed' | 'ticket_not_admitted'
+  redeemed_at?: string
+  prize_name?: string
+  redemption_type?: 'free_item' | 'upgrade' | 'digital_only'
 }
 
 export interface CheckoutInitiateRequest {

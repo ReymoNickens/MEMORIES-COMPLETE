@@ -292,3 +292,76 @@ BEGIN
   END IF;
   RAISE NOTICE 'PASS  reservation status transitions are readable for the route to gate on';
 END $$;
+
+-- ══ 9. Raffle draw never over-awards, and a prize redeems exactly once ═════
+-- The build brief for the raffle feature requires the draw to happen inside
+-- complete_paid_checkout itself and never hand out more than the configured
+-- pool, whatever order tickets clear in. Checks a fixed-count pool of 3 out
+-- of 10 tickets sold one at a time — every prize claimed, none oversold —
+-- then exercises redeem_raffle_prize's one-time-only guard and confirms its
+-- ledger posting balances like every other money-moving path here.
+DO $$
+DECLARE
+  v_t uuid; v_owner uuid; v_prize uuid; v_co uuid; v_ref text;
+  v_result jsonb; v_ticket uuid; v_wins int; v_left int; v_ref_id text;
+BEGIN
+  SELECT id INTO v_t FROM tenants WHERE slug='memories-nc';
+  SELECT id INTO v_owner FROM users WHERE tenant_id=v_t AND EXISTS (
+    SELECT 1 FROM user_roles WHERE user_id=users.id AND role='owner') LIMIT 1;
+
+  -- The door must actually be open for the redemption half of this test.
+  UPDATE events SET check_in_from = now() - interval '1 hour',
+                     check_in_until = now() + interval '6 hours'
+    WHERE id='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+  UPDATE ticket_types SET remaining = 10 WHERE id='cccccccc-cccc-cccc-cccc-cccccccccccc';
+
+  INSERT INTO raffle_prizes (event_id, tenant_id, ticket_type_id, name, redemption_type,
+    win_mode, quantity_available, quantity_remaining, ledger_account, cost_pesewas, created_by)
+  VALUES ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', v_t, 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+    'Free bottle', 'free_item', 'fixed_count', 3, 3, 'comps', 15000, v_owner)
+  RETURNING id INTO v_prize;
+
+  FOR i IN 1..10 LOOP
+    v_ref := 'raffle_' || i || '_' || encode(gen_random_bytes(5),'hex');
+    INSERT INTO pending_checkouts (tenant_id, ticket_type_id, event_id, quantity,
+      buyer_name, buyer_phone, buyer_email, amount_pesewas, paystack_ref, status)
+    VALUES (v_t,'cccccccc-cccc-cccc-cccc-cccccccccccc','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+      1,'Raffle Buyer','+2332449' || lpad((floor(random()*100000))::int::text,5,'0'),
+      'raffle@example.gh',20000,v_ref,'paid')
+    RETURNING id INTO v_co;
+
+    PERFORM complete_paid_checkout(v_co, jsonb_build_array(
+      jsonb_build_object('totp_enc','r','access_hash',encode(gen_random_bytes(16),'hex'),
+                         'amount_pesewas',20000,'paystack_ref',v_ref)));
+  END LOOP;
+
+  SELECT count(*) INTO v_wins FROM ticket_rewards WHERE raffle_prize_id = v_prize;
+  SELECT quantity_remaining INTO v_left FROM raffle_prizes WHERE id = v_prize;
+  IF v_wins <> 3 OR v_left <> 0 THEN
+    RAISE EXCEPTION 'FAIL: expected exactly 3 winners and 0 left, got % winners / % left', v_wins, v_left;
+  END IF;
+  RAISE NOTICE 'PASS  fixed-count raffle draw awards exactly the pool, never over-awards';
+
+  SELECT ticket_id INTO v_ticket FROM ticket_rewards WHERE raffle_prize_id = v_prize LIMIT 1;
+  v_result := redeem_ticket(v_ticket, NULL, 'Test Door', 'Door 1', 'online');
+  IF NOT (v_result->>'ok')::bool OR NOT (v_result->'reward'->>'won')::bool THEN
+    RAISE EXCEPTION 'FAIL: admitting a winning ticket did not surface its reward: %', v_result;
+  END IF;
+
+  v_result := redeem_raffle_prize(v_ticket, v_owner);
+  IF NOT (v_result->>'ok')::bool THEN
+    RAISE EXCEPTION 'FAIL: could not redeem a legitimate prize: %', v_result;
+  END IF;
+  v_result := redeem_raffle_prize(v_ticket, v_owner);
+  IF (v_result->>'ok')::bool OR v_result->>'reason' <> 'already_redeemed' THEN
+    RAISE EXCEPTION 'FAIL: prize redeemed twice: %', v_result;
+  END IF;
+  RAISE NOTICE 'PASS  a raffle prize redeems exactly once';
+
+  SELECT tr.id::text INTO v_ref_id FROM ticket_rewards tr WHERE ticket_id = v_ticket;
+  IF (SELECT COALESCE(SUM(CASE WHEN direction='DR' THEN amount_pesewas ELSE -amount_pesewas END),0)
+      FROM ledger_entries WHERE ref_type='raffle_redemption' AND ref_id::text = v_ref_id) <> 0 THEN
+    RAISE EXCEPTION 'FAIL: raffle redemption ledger entry does not balance';
+  END IF;
+  RAISE NOTICE 'PASS  raffle redemption posts a balanced ledger entry';
+END $$;
