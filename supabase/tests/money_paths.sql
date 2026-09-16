@@ -472,3 +472,79 @@ BEGIN
 
   RAISE NOTICE 'PASS  a queued order retried on reconnect lands exactly once';
 END $$;
+
+-- ══ 12. Bar stock reconciliation catches what cash reconciliation cannot ══
+-- A bartender who under-rings a round and pockets the difference balances
+-- their cash perfectly — get_stock_reconciliation is the only thing that
+-- catches that, by comparing what physically left the shelf (opening minus
+-- closing count) against what the till says was sold plus any logged
+-- adjustment (comp/breakage/debt/transfer). Also checks that finalizing
+-- twice doesn't clobber a manager's decision on an already-explained one.
+DO $$
+DECLARE
+  v_t uuid; v_owner uuid; v_shift uuid; v_bottle uuid; v_beer uuid;
+  v_rec record; v_finalize jsonb;
+BEGIN
+  SELECT id INTO v_t FROM tenants WHERE slug='memories-nc';
+  SELECT id INTO v_owner FROM users WHERE tenant_id=v_t AND EXISTS (
+    SELECT 1 FROM user_roles WHERE user_id=users.id AND role='owner') LIMIT 1;
+  -- Same shift as tests 10/11, still open. Pick products with no order
+  -- history on it yet (tests 10/11 already sold something on this shift) so
+  -- this test's absolute counts aren't contaminated by earlier ones sharing
+  -- the same shift.
+  SELECT id INTO v_shift FROM shifts WHERE tenant_id=v_t AND closed_at IS NULL;
+  SELECT p.id INTO v_bottle FROM products p
+    WHERE p.tenant_id=v_t AND p.station='bar' AND p.price_pesewas > 10000
+      AND NOT EXISTS (SELECT 1 FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE o.shift_id=v_shift AND oi.product_id=p.id)
+    LIMIT 1;
+  SELECT p.id INTO v_beer FROM products p
+    WHERE p.tenant_id=v_t AND p.station='bar' AND p.price_pesewas < 10000
+      AND NOT EXISTS (SELECT 1 FROM order_items oi JOIN orders o ON o.id=oi.order_id WHERE o.shift_id=v_shift AND oi.product_id=p.id)
+    LIMIT 1;
+
+  -- Bottle: 20 opened, 6 physically closed out = 14 gone. Only 12 were rung
+  -- up through the till (two rounds of 6). Two units are unaccounted for.
+  INSERT INTO stock_openings (shift_id, product_id, qty, set_by) VALUES (v_shift, v_bottle, 20, v_owner);
+  PERFORM place_order(v_t, 'waiter', 'Recon A', '+233240002001', 'cash', NULL, NULL, 'Bar Main', v_owner, v_shift,
+    jsonb_build_array(jsonb_build_object('product_id', v_bottle, 'quantity', 6)));
+  PERFORM place_order(v_t, 'waiter', 'Recon B', '+233240002002', 'cash', NULL, NULL, 'Bar Main', v_owner, v_shift,
+    jsonb_build_array(jsonb_build_object('product_id', v_bottle, 'quantity', 6)));
+  INSERT INTO stock_closings (shift_id, product_id, qty, set_by) VALUES (v_shift, v_bottle, 6, v_owner);
+
+  -- Beer: 100 opened, 20 sold, 5 comped (logged), 75 closed out = 25 gone,
+  -- exactly matching 20 sold + 5 comped. Clean.
+  INSERT INTO stock_openings (shift_id, product_id, qty, set_by) VALUES (v_shift, v_beer, 100, v_owner);
+  PERFORM place_order(v_t, 'waiter', 'Recon C', '+233240002003', 'cash', NULL, NULL, 'Bar Main', v_owner, v_shift,
+    jsonb_build_array(jsonb_build_object('product_id', v_beer, 'quantity', 20)));
+  INSERT INTO stock_adjustments (tenant_id, shift_id, product_id, kind, qty, amount_pesewas, note, actor_id)
+  VALUES (v_t, v_shift, v_beer, 'comp', 5, 0, 'round on the house', v_owner);
+  INSERT INTO stock_closings (shift_id, product_id, qty, set_by) VALUES (v_shift, v_beer, 75, v_owner);
+
+  SELECT * INTO v_rec FROM get_stock_reconciliation(v_shift) WHERE product_id = v_bottle;
+  IF v_rec.shortage_qty <> 2 THEN RAISE EXCEPTION 'FAIL: expected a 2-unit bottle shortage, got %', v_rec.shortage_qty; END IF;
+
+  SELECT * INTO v_rec FROM get_stock_reconciliation(v_shift) WHERE product_id = v_beer;
+  IF v_rec.shortage_qty <> 0 THEN RAISE EXCEPTION 'FAIL: beer should reconcile clean once the comp is counted in, got shortage %', v_rec.shortage_qty; END IF;
+
+  SELECT * INTO v_rec FROM get_stock_reconciliation(v_shift) WHERE product_id NOT IN (v_bottle, v_beer) LIMIT 1;
+  IF v_rec.counted THEN RAISE EXCEPTION 'FAIL: an uncounted product must never report counted=true'; END IF;
+  RAISE NOTICE 'PASS  stock reconciliation flags a real leak, clears an explained one, and never flags the uncounted';
+
+  v_finalize := finalize_stock_reconciliation(v_shift, v_owner);
+  IF (v_finalize->>'flagged')::int <> 1 THEN RAISE EXCEPTION 'FAIL: expected exactly 1 flagged shortage, got %', v_finalize->>'flagged'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM stock_shortages WHERE shift_id=v_shift AND product_id=v_bottle AND qty=2 AND status='open') THEN
+    RAISE EXCEPTION 'FAIL: the bottle shortage was not written to stock_shortages';
+  END IF;
+  IF EXISTS (SELECT 1 FROM stock_shortages WHERE shift_id=v_shift AND product_id=v_beer) THEN
+    RAISE EXCEPTION 'FAIL: beer reconciled clean and must not have a shortage row';
+  END IF;
+
+  UPDATE stock_shortages SET status='explained', note='recount confirmed, under-poured not stolen'
+    WHERE shift_id=v_shift AND product_id=v_bottle;
+  PERFORM finalize_stock_reconciliation(v_shift, v_owner);
+  IF (SELECT status FROM stock_shortages WHERE shift_id=v_shift AND product_id=v_bottle) <> 'explained' THEN
+    RAISE EXCEPTION 'FAIL: re-running reconciliation overwrote a manager''s explained decision';
+  END IF;
+
+  RAISE NOTICE 'PASS  finalize snapshots exactly the real leak once, and a manager''s decision on it survives a re-run';
+END $$;

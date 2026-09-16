@@ -5,7 +5,7 @@ the Paystack key is not `sk_live`.
 
 ## Apply before first live charge
 
-1. Run Supabase migrations `001` through `025` in order. `017`, `018` and `019`
+1. Run Supabase migrations `001` through `026` in order. `017`, `018` and `019`
    are the audit passes and are **not optional** — between them they enable
    RLS on the payroll and stock tables, revoke the financial RPCs from the
    browser key, stamp every posting with its shift, add the ledger balance
@@ -99,6 +99,20 @@ openssl rand -hex 16   # PIN_PEPPER
   the matching liability.
 - `close_shift` refuses while any table is on an open tab or any server who
   took cash has not been counted down, and posts the variance to the ledger.
+- Cash reconciliation and stock reconciliation catch different leaks and are
+  deliberately separate mechanisms. `close_shift`/`shift_handovers` answer
+  "did the money a server handed in match what the till says they took" — a
+  bartender who under-rings a round and pockets the difference balances
+  their cash perfectly, so that alone proves nothing about the bar. Bar
+  stock (`stock_openings`, `stock_closings`, `stock_adjustments`,
+  `get_stock_reconciliation`) answers "did the units that physically left
+  the shelf match what the till rang up plus any logged comp/breakage/debt/
+  transfer" — that's what actually catches it. `finalize_stock_reconciliation`
+  snapshots a real shortage into `stock_shortages` for a manager to work;
+  running it again never overwrites a status a manager already set away
+  from `'open'`. Deliberately not wired into `close_shift`'s refusal — a
+  bar sheet sometimes gets counted the next morning, and blocking the whole
+  night's close on it would be the wrong trade.
 
 ## What the browser key may touch
 

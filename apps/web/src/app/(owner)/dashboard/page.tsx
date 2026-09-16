@@ -113,6 +113,7 @@ export default function OwnerDashboard() {
           <nav className="flex flex-wrap gap-4 text-[11px] uppercase tracking-[0.18em] text-[#8A8580]">
             <Link className="hover:text-[#F3EDE4]" href="/dashboard/shift-close">Count down</Link>
             <Link className="hover:text-[#F3EDE4]" href="/floor">Floor</Link>
+            <Link className="hover:text-[#F3EDE4]" href="/stock">Stock</Link>
             <Link className="hover:text-[#F3EDE4]" href="/organiser">Organiser</Link>
             <Link className="hover:text-[#F3EDE4]" href="/reissue">Reissue</Link>
           </nav>
