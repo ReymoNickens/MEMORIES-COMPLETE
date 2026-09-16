@@ -365,3 +365,71 @@ BEGIN
   END IF;
   RAISE NOTICE 'PASS  raffle redemption posts a balanced ledger entry';
 END $$;
+
+-- ══ 10. Cash walk-up ticket sale: named owner required, posts to cash ═════
+-- Front Office sells tickets for cash at the door. Same accountability rule
+-- as a cash bar order (place_order already enforces it for F&B) — cash
+-- with no attributed staff member and no open shift is refused outright —
+-- and the sale must land in cash_collections for shift-close reconciliation
+-- and post DR cash_drawer / CR ticket_revenue rather than momo_clearing.
+DO $$
+DECLARE
+  v_t uuid; v_owner uuid; v_co uuid; v_ref text; v_r jsonb; v_tid uuid;
+  v_dr bigint; v_cr bigint;
+BEGIN
+  SELECT id INTO v_t FROM tenants WHERE slug='memories-nc';
+  SELECT id INTO v_owner FROM users WHERE tenant_id=v_t AND EXISTS (
+    SELECT 1 FROM user_roles WHERE user_id=users.id AND role='owner') LIMIT 1;
+
+  UPDATE ticket_types SET remaining = 10 WHERE id='cccccccc-cccc-cccc-cccc-cccccccccccc';
+  v_ref := 'cash_' || encode(gen_random_bytes(6),'hex');
+
+  INSERT INTO pending_checkouts (tenant_id, ticket_type_id, event_id, quantity,
+    buyer_name, buyer_phone, buyer_email, amount_pesewas, paystack_ref, status)
+  VALUES (v_t,'cccccccc-cccc-cccc-cccc-cccccccccccc','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    1,'Walk-up Guest','+2332449' || lpad((floor(random()*100000))::int::text,5,'0'),
+    'walkup@example.gh',20000,v_ref,'paid')
+  RETURNING id INTO v_co;
+
+  -- No shift open right now in this test run — refused, same as cash F&B.
+  BEGIN
+    PERFORM complete_cash_ticket_checkout(v_co, jsonb_build_array(
+      jsonb_build_object('totp_enc','c','access_hash',encode(gen_random_bytes(16),'hex'),
+                         'amount_pesewas',20000,'paystack_ref',v_ref||'-1')), NULL);
+    RAISE EXCEPTION 'FAIL: cash sale went through with no attributed staff member';
+  EXCEPTION WHEN OTHERS THEN
+    IF SQLERRM <> 'cash_needs_waiter_and_shift' THEN
+      RAISE EXCEPTION 'FAIL: expected cash_needs_waiter_and_shift, got %', SQLERRM;
+    END IF;
+  END;
+
+  -- Open a shift, then the same checkout succeeds and books correctly.
+  INSERT INTO shifts (tenant_id, opened_by) VALUES (v_t, v_owner);
+  v_r := complete_cash_ticket_checkout(v_co, jsonb_build_array(
+    jsonb_build_object('totp_enc','c','access_hash',encode(gen_random_bytes(16),'hex'),
+                       'amount_pesewas',20000,'paystack_ref',v_ref||'-1')), v_owner);
+  IF NOT (v_r->>'ok')::bool THEN RAISE EXCEPTION 'FAIL: cash ticket sale failed: %', v_r; END IF;
+  v_tid := ((v_r->'ticket_ids')->>0)::uuid;
+
+  IF NOT EXISTS (SELECT 1 FROM cash_collections WHERE ticket_checkout_id = v_co AND attributed_waiter_id = v_owner) THEN
+    RAISE EXCEPTION 'FAIL: cash ticket sale did not book a cash_collections row';
+  END IF;
+
+  SELECT COALESCE(SUM(amount_pesewas) FILTER (WHERE direction='DR' AND account='cash_drawer'),0),
+         COALESCE(SUM(amount_pesewas) FILTER (WHERE direction='CR' AND account='ticket_revenue'),0)
+    INTO v_dr, v_cr
+    FROM ledger_entries WHERE ref_type='ticket_payment' AND ref_id=v_tid;
+  IF v_dr <> 20000 OR v_cr <> 20000 THEN
+    RAISE EXCEPTION 'FAIL: cash ticket posting wrong, DR % CR %', v_dr, v_cr;
+  END IF;
+
+  -- Replaying the same checkout (a retried tap) must not sell a second ticket.
+  v_r := complete_cash_ticket_checkout(v_co, jsonb_build_array(
+    jsonb_build_object('totp_enc','c','access_hash',encode(gen_random_bytes(16),'hex'),
+                       'amount_pesewas',20000,'paystack_ref',v_ref||'-1')), v_owner);
+  IF NOT (v_r->>'already')::bool OR ((v_r->'ticket_ids')->>0)::uuid <> v_tid THEN
+    RAISE EXCEPTION 'FAIL: cash ticket sale was not idempotent on replay';
+  END IF;
+
+  RAISE NOTICE 'PASS  cash ticket sale requires a named owner and posts to cash_drawer, idempotently';
+END $$;

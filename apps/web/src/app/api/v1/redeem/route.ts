@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
     }
     deviceId = device.id
     deviceName = device.name as string
-  } else if (staff && (staff.roles.includes('door') || staff.roles.includes('owner') || staff.roles.includes('manager'))) {
+  } else if (staff && staff.roles.some(r => ['door', 'owner', 'manager', 'front_office'].includes(r))) {
     deviceName = staff.full_name
     doorLabel = staff.station_label ?? 'Door 1'
   } else {

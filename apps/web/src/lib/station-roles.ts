@@ -13,7 +13,10 @@ export const ROLE_STATIONS: Record<StaffRole, StationKind[]> = {
   manager: [...ALL_STATION_KINDS],
   event_manager: [...ALL_STATION_KINDS],
   door: ['door'],
-  front_office: ['door', 'floor'],
+  // front_office has its own screen (sell a walk-up ticket, validate,
+  // book a table) rather than claiming a door or floor station — see
+  // PRIVILEGED_DESTINATIONS below.
+  front_office: [],
   bartender: ['bar'],
   kitchen: ['kitchen'],
   waiter: ['floor'],
@@ -39,6 +42,7 @@ const PRIVILEGED_DESTINATIONS: Array<[StaffRole, string]> = [
   ['manager', '/dashboard'],
   ['event_manager', '/admin'],
   ['organiser', '/organiser'],
+  ['front_office', '/front-office'],
 ]
 
 // A privileged role (owner, manager, event_manager, organiser) can also

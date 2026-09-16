@@ -32,11 +32,11 @@ export async function issueTicketsFromCheckout(
     buyer_name?: string
     buyer_phone?: string
   },
-  opts?: { fee_pesewas?: number; method?: string },
+  opts?: { fee_pesewas?: number; method?: string; cashWaiterId?: string },
 ): Promise<{ ticket_ids: string[]; access_tokens: string[]; already: boolean }> {
   const amounts = splitPesewas(checkout.amount_pesewas, checkout.quantity)
   const fees = splitPesewas(opts?.fee_pesewas ?? 0, checkout.quantity)
-  const method = paymentMethod(opts?.method)
+  const method = opts?.cashWaiterId ? 'cash' : paymentMethod(opts?.method)
   const accessTokens = Array.from({ length: checkout.quantity }, () => randomToken(18))
 
   const bundle = amounts.map((amount_pesewas, i) => ({
@@ -48,14 +48,24 @@ export async function issueTicketsFromCheckout(
     paystack_ref: `${checkout.paystack_ref}-${i + 1}`,
   }))
 
-  const { data, error } = await supabase.rpc('complete_paid_checkout', {
-    p_checkout_id: checkout.id,
-    p_tickets: bundle,
-  })
+  // Front Office's walk-up cash sale goes through complete_cash_ticket_checkout
+  // instead — same shape, posts to cash_drawer, and books a cash_collections
+  // row against the staff member who took the money.
+  const { data, error } = opts?.cashWaiterId
+    ? await supabase.rpc('complete_cash_ticket_checkout', {
+        p_checkout_id: checkout.id,
+        p_tickets: bundle,
+        p_waiter_id: opts.cashWaiterId,
+      })
+    : await supabase.rpc('complete_paid_checkout', {
+        p_checkout_id: checkout.id,
+        p_tickets: bundle,
+      })
 
   if (error) {
     const msg = error.message ?? ''
     if (msg.includes('sold_out')) throw new Error('sold_out')
+    if (msg.includes('cash_needs_waiter_and_shift')) throw new Error('cash_needs_waiter_and_shift')
     throw new Error(msg || 'issue_failed')
   }
 

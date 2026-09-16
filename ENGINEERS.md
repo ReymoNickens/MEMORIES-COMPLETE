@@ -5,7 +5,7 @@ the Paystack key is not `sk_live`.
 
 ## Apply before first live charge
 
-1. Run Supabase migrations `001` through `022` in order. `017`, `018` and `019`
+1. Run Supabase migrations `001` through `023` in order. `017`, `018` and `019`
    are the audit passes and are **not optional** — between them they enable
    RLS on the payroll and stock tables, revoke the financial RPCs from the
    browser key, stamp every posting with its shift, add the ledger balance
