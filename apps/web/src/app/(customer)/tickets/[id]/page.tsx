@@ -21,11 +21,14 @@ export default function TicketPage() {
   const [ticket, setTicket] = useState<TicketData | null>(null)
   const [qrValue, setQrValue] = useState('')
   const [seconds, setSeconds] = useState(30)
+  const [sharing, setSharing] = useState(false)
+  const accessRef = useRef('')
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     const access = search.get('access') || sessionStorage.getItem(`ticket-access-${id}`)
     if (!access) return
+    accessRef.current = access
     void fetch(`/api/tickets/${id}?access=${access}`)
       .then(r => r.json())
       .then((data: TicketData & { error?: string }) => {
@@ -54,6 +57,37 @@ export default function TicketPage() {
         This pass needs its private link.
       </main>
     )
+  }
+
+  async function shareTicket() {
+    setSharing(true)
+    try {
+      const url = `/api/tickets/${id}/share-image?access=${accessRef.current}`
+      const res = await fetch(url)
+      const blob = await res.blob()
+      const file = new File([blob], `${ticket?.serial ?? 'ticket'}.png`, { type: 'image/png' })
+
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: ticket?.event_name ?? 'My ticket',
+          text: `I'm at ${ticket?.event_name ?? 'the club'}`,
+        })
+      } else {
+        // No Web Share API (desktop browsers, mostly) — hand over a direct
+        // download instead of requiring a screenshot.
+        const link = document.createElement('a')
+        link.href = URL.createObjectURL(blob)
+        link.download = `${ticket?.serial ?? 'ticket'}.png`
+        link.click()
+        URL.revokeObjectURL(link.href)
+      }
+    } catch {
+      // AbortError from a cancelled share sheet, or a download that failed —
+      // either way there's nothing useful to show the guest.
+    } finally {
+      setSharing(false)
+    }
   }
 
   const vip = ticket.ticket_type_name.toLowerCase().includes('vip')
@@ -107,6 +141,15 @@ export default function TicketPage() {
             <p className="font-mono text-[12px] tracking-wider text-[#8A8580]">{ticket.serial}</p>
           </div>
         </article>
+
+        <button
+          type="button"
+          disabled={sharing}
+          onClick={() => void shareTicket()}
+          className="mt-6 flex h-14 items-center justify-center bg-ev-crimson text-[13px] font-semibold uppercase tracking-[0.22em] text-white disabled:opacity-60"
+        >
+          {sharing ? 'Preparing…' : 'Share to your story'}
+        </button>
 
         <p className="mt-6 text-center text-[12px] leading-relaxed text-[#8A8580]">
           Live code. {seconds}s until the next cycle.

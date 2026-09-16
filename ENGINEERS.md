@@ -5,7 +5,7 @@ the Paystack key is not `sk_live`.
 
 ## Apply before first live charge
 
-1. Run Supabase migrations `001` through `021` in order. `017`, `018` and `019`
+1. Run Supabase migrations `001` through `022` in order. `017`, `018` and `019`
    are the audit passes and are **not optional** — between them they enable
    RLS on the payroll and stock tables, revoke the financial RPCs from the
    browser key, stamp every posting with its shift, add the ledger balance
@@ -50,14 +50,15 @@ openssl rand -hex 16   # PIN_PEPPER
    (which row in `devices`) and `device_key` (the secret whose sha256 is
    `devices.key_hash`). They are not the same value. A scanner with only an id
    is now rejected by both the hub and the cloud.
-8. `021_admin_content.sql` creates the `event-artwork` and `gallery` Storage
-   buckets and their policies in a block guarded by
-   `to_regclass('storage.buckets') IS NOT NULL` — the `storage` schema only
-   exists on a real Supabase project, not on the plain Postgres CI runs
-   migrations against, so that block is a deliberate no-op in CI and only
-   takes effect on `supabase db push` against the actual project. If a fresh
-   project's flyer/gallery upload 404s or 403s, confirm those two buckets
-   exist and are public before looking anywhere else.
+8. `021_admin_content.sql` and `022_ticket_share_image.sql` create the
+   `event-artwork`, `gallery` and `ticket-art` Storage buckets and their
+   policies in a block guarded by `to_regclass('storage.buckets') IS NOT
+   NULL` — the `storage` schema only exists on a real Supabase project, not
+   on the plain Postgres CI runs migrations against, so that block is a
+   deliberate no-op in CI and only takes effect on `supabase db push`
+   against the actual project. If a fresh project's flyer/gallery/ticket
+   image upload 404s or 403s, confirm those buckets exist and are public
+   before looking anywhere else.
 
 ## Invariants the code enforces
 
